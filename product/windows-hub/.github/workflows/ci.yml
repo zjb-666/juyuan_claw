@@ -1,0 +1,823 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  repo-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Ensure .squad stays untracked
+      shell: bash
+      run: |
+        tracked_squad="$(git ls-files .squad)"
+        if [ -n "$tracked_squad" ]; then
+          echo "::error::.squad files must not be tracked by Git. Keep squad state local and ignored."
+          echo "$tracked_squad"
+          exit 1
+        fi
+
+  test:
+    needs: repo-hygiene
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    steps:
+    - name: Fail if repo hygiene failed
+      if: ${{ needs.repo-hygiene.result != 'success' }}
+      shell: pwsh
+      run: |
+        Write-Error "repo-hygiene failed; see the repo-hygiene job output."
+        exit 1
+
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Detect gateway LKG drift from npm latest
+      id: gateway_lkg_drift
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        $sourcePath = "src/OpenClaw.SetupEngine/GatewayLkgVersion.cs"
+        $source = Get-Content -LiteralPath $sourcePath -Raw
+        $match = [regex]::Match($source, 'LkgVersion\s*=\s*"([^"]+)"')
+        if (-not $match.Success) {
+          throw "Unable to parse LKG version from $sourcePath"
+        }
+
+        $pinned = $match.Groups[1].Value
+        $latest = (Invoke-RestMethod -Uri "https://registry.npmjs.org/openclaw/latest" -TimeoutSec 30).version
+        if ([string]::IsNullOrWhiteSpace($latest)) {
+          throw "Unable to resolve npm latest version for openclaw."
+        }
+        if ($latest -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.\-+][A-Za-z0-9.\-]+)*$') {
+          throw "Resolved npm latest version has unexpected format: $latest"
+        }
+
+        "pinned=$pinned" >> $env:GITHUB_OUTPUT
+        "latest=$latest" >> $env:GITHUB_OUTPUT
+
+        if ($pinned -ne $latest) {
+          "drifted=true" >> $env:GITHUB_OUTPUT
+          Write-Host "::warning::Gateway LKG drift detected: pinned $pinned, npm latest $latest. Run gateway-lkg-update workflow to refresh the standing draft PR."
+          Write-Error "Gateway LKG drift detected (pinned $pinned, npm latest $latest)."
+          "### :warning: Gateway LKG drift detected" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "- Pinned LKG: $pinned" >> $env:GITHUB_STEP_SUMMARY
+          "- npm latest: $latest" >> $env:GITHUB_STEP_SUMMARY
+          "- Action: run `gateway-lkg-update` to refresh the standing draft PR." >> $env:GITHUB_STEP_SUMMARY
+          exit 1
+        } else {
+          "drifted=false" >> $env:GITHUB_OUTPUT
+          Write-Host "Gateway LKG is current ($pinned)."
+          "### Gateway LKG is current" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "- Pinned LKG: $pinned" >> $env:GITHUB_STEP_SUMMARY
+        }
+
+    - name: Setup .NET 10
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Cache NuGet packages
+      continue-on-error: true
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Install GitVersion
+      uses: gittools/actions/gitversion/setup@v4
+      with:
+        versionSpec: '6.4.x'
+
+    - name: Determine Version
+      id: gitversion
+      uses: gittools/actions/gitversion/execute@v4
+
+    - name: Verify tag version output
+      if: startsWith(github.ref, 'refs/tags/v')
+      shell: pwsh
+      run: |
+        $expected = "${{ github.ref_name }}" -replace '^v', ''
+        $actual = "${{ steps.gitversion.outputs.semVer }}"
+        if ($actual -ne $expected) {
+          throw "GitVersion SemVer '$actual' did not match tag '$expected'."
+        }
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    # dotnet-coverage replaces coverlet because the integration tests spawn the
+    # tray exe out-of-process; coverlet only instruments the in-proc test
+    # assembly. Installing once at the job level lets every test step wrap its
+    # `dotnet test` invocation in `dotnet-coverage collect`.
+    - name: Install dotnet-coverage
+      run: dotnet tool install --global dotnet-coverage
+
+    - name: Build Shared Library
+      run: dotnet build src/OpenClaw.Shared -c Debug --no-restore
+
+    - name: Build Tray App (WinUI)
+      run: dotnet build src/OpenClaw.Tray.WinUI -c Debug -r win-x64
+
+    - name: Build Tests
+      run: |
+        dotnet build tests/OpenClaw.Shared.Tests -c Debug --no-restore
+        dotnet build tests/OpenClaw.Tray.Tests -c Debug -r win-x64 --no-restore
+        dotnet build tests/OpenClaw.Connection.Tests -c Debug --no-restore
+        dotnet build tests/OpenClaw.WinNode.Cli.Tests -c Debug --no-restore
+        dotnet build tests/OpenClaw.Tray.IntegrationTests -c Debug -r win-x64 --no-restore
+        dotnet build tests/OpenClaw.Tray.UITests -c Debug -r win-x64 --no-restore
+        dotnet build tests/OpenClawTray.FunctionalUI.Tests -c Debug -r win-x64 --no-restore
+        dotnet build tests/OpenClaw.SetupEngine.Tests -c Debug -r win-x64
+
+    - name: Run Shared Tests
+      env:
+        OPENCLAW_RUN_INTEGRATION: 1
+      run: >
+        dotnet-coverage collect
+        --output TestResults\Shared\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.Shared.Tests
+        --no-build
+        -c Debug
+        --verbosity normal
+        --results-directory TestResults\Shared
+        --logger trx;LogFileName=OpenClaw.Shared.Tests.trx"
+
+    - name: Run Tray Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\Tray\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.Tray.Tests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\Tray
+        --logger trx;LogFileName=OpenClaw.Tray.Tests.trx"
+
+    - name: Run Connection Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\Connection\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.Connection.Tests
+        --no-build
+        -c Debug
+        --verbosity normal
+        --results-directory TestResults\Connection
+        --logger trx;LogFileName=OpenClaw.Connection.Tests.trx"
+
+    - name: Run WinNode CLI Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\WinNodeCli\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.WinNode.Cli.Tests
+        --no-build
+        -c Debug
+        --verbosity normal
+        --results-directory TestResults\WinNodeCli
+        --logger trx;LogFileName=OpenClaw.WinNode.Cli.Tests.trx"
+
+    # Tray integration tests gate on OPENCLAW_RUN_INTEGRATION; set it so the
+    # MCP-server / capability tests actually run. dotnet-coverage with no
+    # filter captures coverage for both the test host AND the spawned tray
+    # exe (coverlet could not — see tests/Directory.Build.props comment).
+    - name: Run Tray Integration Tests
+      env:
+        OPENCLAW_RUN_INTEGRATION: 1
+      run: >
+        dotnet-coverage collect
+        --output TestResults\TrayIntegration\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.Tray.IntegrationTests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\TrayIntegration
+        --logger trx;LogFileName=OpenClaw.Tray.IntegrationTests.trx"
+
+    # UI tests need a real visual tree AND a system-registered WindowsAppRuntime
+    # framework MSIX. The hosted windows-2025 runner image doesn't preinstall it,
+    # so install the runtime that matches the repo-level WindowsAppSDK version.
+    - name: Install WindowsAppRuntime
+      shell: pwsh
+      run: |
+        [xml]$props = Get-Content (Join-Path $env:GITHUB_WORKSPACE "Directory.Build.props")
+        $versionNode = $props.SelectSingleNode("/Project/PropertyGroup/MicrosoftWindowsAppSDKVersion")
+        if ($null -eq $versionNode -or [string]::IsNullOrWhiteSpace($versionNode.InnerText)) {
+          throw "MicrosoftWindowsAppSDKVersion was not found in Directory.Build.props"
+        }
+
+        $version = $versionNode.InnerText.Trim()
+        $channel = [regex]::Match($version, '^\d+\.\d+').Value
+        if ([string]::IsNullOrWhiteSpace($channel)) {
+          throw "Cannot derive WindowsAppRuntime channel from MicrosoftWindowsAppSDKVersion '$version'"
+        }
+
+        $url = "https://aka.ms/windowsappsdk/$channel/$version/windowsappruntimeinstall-x64.exe"
+        Write-Host "Installing WindowsAppRuntime $version from $url"
+        $exe = "$env:RUNNER_TEMP\WindowsAppRuntimeInstall.exe"
+        Invoke-WebRequest -Uri $url -OutFile $exe
+        & $exe --quiet
+        if ($LASTEXITCODE -ne 0) { throw "WindowsAppRuntimeInstall failed with exit code $LASTEXITCODE" }
+
+    - name: Run Functional UI Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\FunctionalUI\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClawTray.FunctionalUI.Tests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\FunctionalUI
+        --logger trx;LogFileName=OpenClawTray.FunctionalUI.Tests.trx"
+
+    - name: Run SetupEngine Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\SetupEngine\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.SetupEngine.Tests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\SetupEngine
+        --logger trx;LogFileName=OpenClaw.SetupEngine.Tests.trx"
+
+    - name: Run Tray UI Tests
+      run: >
+        dotnet-coverage collect
+        --output TestResults\TrayUI\coverage.cobertura.xml
+        --output-format cobertura
+        "dotnet test tests/OpenClaw.Tray.UITests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\TrayUI
+        --logger trx;LogFileName=OpenClaw.Tray.UITests.trx
+        --filter Category!=Accessibility"
+
+    # Accessibility Insights CI pass: scans each page in the real app process.
+    - name: Run Accessibility Tests (Axe.Windows)
+      id: a11y
+      run: >
+        dotnet test tests/OpenClaw.Tray.UITests
+        --no-build
+        -c Debug
+        -r win-x64
+        --verbosity normal
+        --results-directory TestResults\Accessibility
+        --logger "trx;LogFileName=Accessibility.trx"
+        --filter Category=Accessibility
+
+    - name: Accessibility test summary
+      if: always() && steps.a11y.outcome != 'skipped'
+      shell: pwsh
+      run: |
+        if ("${{ steps.a11y.outcome }}" -eq "failure") {
+          "### :x: Accessibility violations detected" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "Axe.Windows scans found WCAG violations in one or more pages." >> $env:GITHUB_STEP_SUMMARY
+          "See the `Accessibility.trx` artifact for details." >> $env:GITHUB_STEP_SUMMARY
+        } else {
+          "### :white_check_mark: Accessibility scans passed" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "All pages passed Axe.Windows accessibility validation." >> $env:GITHUB_STEP_SUMMARY
+        }
+
+    - name: Verify DevBuild identity marker
+      shell: pwsh
+      run: |
+        dotnet build src/OpenClaw.Tray.WinUI -c Debug -r win-x64 -p:DevBuild=true --no-restore
+        $marker = Get-ChildItem -Path src\OpenClaw.Tray.WinUI\bin\Debug -Recurse -Filter app-identity.txt |
+          Where-Object { $_.FullName -like '*\win-x64\app-identity.txt' } |
+          Sort-Object LastWriteTimeUtc -Descending |
+          Select-Object -First 1
+        if ($null -eq $marker) {
+          throw "Dev identity marker was not produced by the DevBuild."
+        }
+
+        $identity = (Get-Content -LiteralPath $marker.FullName -Raw).Trim()
+        if ($identity -ne "dev") {
+          throw "Expected DevBuild identity marker 'dev' but found '$identity' at $($marker.FullName)."
+        }
+
+        Write-Host "DevBuild identity marker verified at $($marker.FullName): $identity"
+
+    - name: Upload Test Results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results
+        path: TestResults/
+        if-no-files-found: warn
+
+    outputs:
+      semVer: ${{ steps.gitversion.outputs.semVer }}
+      majorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}
+
+  e2etests:
+    needs: repo-hygiene
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: setup-connect
+            timeout_minutes: 45
+            filter: "FullyQualifiedName~OpenClaw.E2ETests.Setup.SetupAndConnectTests|FullyQualifiedName~OpenClaw.E2ETests.Setup.MxcSetupAndConnectTests"
+          - name: revocation-recovery
+            timeout_minutes: 25
+            filter: FullyQualifiedName~OpenClaw.E2ETests.Setup.RevocationAndRecoveryTests
+          - name: network-recovery
+            timeout_minutes: 25
+            filter: FullyQualifiedName~OpenClaw.E2ETests.Setup.NetworkRecoveryTests
+    steps:
+    - name: Fail if repo hygiene failed
+      if: ${{ needs.repo-hygiene.result != 'success' }}
+      shell: pwsh
+      run: |
+        Write-Error "repo-hygiene failed; see the repo-hygiene job output."
+        exit 1
+
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET 10
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Cache NuGet packages
+      continue-on-error: true
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build Shared Library
+      run: dotnet build src/OpenClaw.Shared -c Debug --no-restore
+
+    - name: Build SetupEngine
+      run: dotnet build src/OpenClaw.SetupEngine -c Debug --no-restore
+
+    - name: Build Tray App (WinUI)
+      run: dotnet build src/OpenClaw.Tray.WinUI -c Debug -r win-x64
+
+    - name: Build E2E Tests
+      run: dotnet build tests/OpenClaw.E2ETests -c Debug -r win-x64
+
+    - name: Run E2E Tests (${{ matrix.name }})
+      env:
+        OPENCLAW_RUN_E2E: 1
+      shell: pwsh
+      run: |
+        dotnet test tests/OpenClaw.E2ETests `
+          --no-build `
+          -c Debug `
+          -r win-x64 `
+          --verbosity normal `
+          --results-directory TestResults/E2E `
+          --logger "trx;LogFileName=OpenClaw.E2ETests.${{ matrix.name }}.trx" `
+          --logger "console;verbosity=detailed" `
+          --filter "${{ matrix.filter }}"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        [xml]$trx = Get-Content "TestResults\E2E\OpenClaw.E2ETests.${{ matrix.name }}.trx"
+        $executed = [int]$trx.TestRun.ResultSummary.Counters.executed
+        if ($executed -lt 1) {
+          Write-Error "E2E shard '${{ matrix.name }}' executed zero tests. Check OPENCLAW_RUN_E2E gating/filter before merging."
+          exit 1
+        }
+        if ("${{ matrix.name }}" -eq "setup-connect") {
+          $mxcProofNames = @(
+            "RealGateway_SystemRun_ExecutesThroughWindowsNodeMxcSandbox",
+            "RealGateway_SystemRun_BlocksWritesToTrayDataDirectoryInMxcSandbox"
+          )
+
+          foreach ($mxcProofName in $mxcProofNames) {
+            $mxcProof = @($trx.TestRun.Results.UnitTestResult | Where-Object { $_.testName -like "*$mxcProofName*" }) | Select-Object -First 1
+            if ($null -eq $mxcProof) {
+              Write-Error "E2E shard '${{ matrix.name }}' did not report the MXC proof test '$mxcProofName'. Check the setup-connect filter before merging."
+              exit 1
+            }
+
+            $mxcOutcome = [string]$mxcProof.outcome
+            if ($mxcOutcome -eq "Passed") {
+              Write-Host "MXC E2E proof passed: $mxcProofName"
+            } elseif ($mxcOutcome -eq "NotExecuted" -or $mxcOutcome -eq "Skipped") {
+              $mxcSkipReason = @($mxcProof.Output.ErrorInfo.Message, $mxcProof.Output.StdOut) |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -First 1
+              if ([string]::IsNullOrWhiteSpace($mxcSkipReason)) {
+                $mxcSkipReason = "skip reason was not present in the trx output"
+              }
+              Write-Warning "MXC E2E proof skipped: $mxcProofName; $mxcSkipReason"
+            } else {
+              Write-Error "MXC E2E proof '$mxcProofName' had unexpected outcome '$mxcOutcome'."
+              exit 1
+            }
+          }
+        }
+
+    - name: Upload E2E Test Results & Logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: e2e-test-results-${{ matrix.name }}
+        path: |
+          TestResults/E2E/
+        if-no-files-found: warn
+
+  build:
+    needs: [test, e2etests]
+    runs-on: ${{ matrix.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}
+    strategy:
+      matrix:
+        rid: [win-x64, win-arm64]
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET 10
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Cache NuGet packages
+      continue-on-error: true
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Restore WinUI Tray App
+      run: dotnet restore src/OpenClaw.Tray.WinUI -r ${{ matrix.rid }}
+
+    - name: Build WinUI Tray App (Release)
+      run: dotnet build src/OpenClaw.Tray.WinUI --no-restore -c Release -r ${{ matrix.rid }}
+
+    - name: Publish WinUI Tray App
+      run: dotnet publish src/OpenClaw.Tray.WinUI -c Release -r ${{ matrix.rid }} --self-contained --no-restore -o publish
+
+    - name: Verify x64 Native Runtime Payload
+      if: matrix.rid == 'win-x64'
+      shell: pwsh
+      run: .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath publish -RequireAppLocalVCRuntime
+
+    - name: Verify ARM64 Native Runtime Payload
+      if: matrix.rid == 'win-arm64'
+      shell: pwsh
+      # -SkipNativeLoadProbe: an ARM64 runner CAN LoadLibrary ARM64 DLLs, but
+      # the full tray native dependency chain may include components that are
+      # not in this payload here (WindowsAppSDK pieces, etc.). The probe is for
+      # x64 parity; signature + presence is what we actually care about.
+      run: .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath publish -RequireAppLocalVCRuntime -SkipNativeLoadProbe
+
+    - name: Verify GitVersion assembly metadata
+      shell: pwsh
+      run: |
+        $expected = "${{ needs.test.outputs.semVer }}"
+        $assemblyPath = Resolve-Path "publish\OpenClaw.Tray.WinUI.dll"
+        $metadata = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($assemblyPath)
+        if ([string]::IsNullOrWhiteSpace($metadata.ProductVersion)) {
+          throw "OpenClaw.Tray.WinUI.dll is missing ProductVersion metadata."
+        }
+        $actual = $metadata.ProductVersion -replace '\+.*$', ''
+        if ($actual -ne $expected) {
+          throw "ProductVersion '$actual' did not match GitVersion SemVer '$expected'."
+        }
+
+    - name: Upload Tray Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: openclaw-tray-${{ matrix.rid }}
+        path: publish/
+
+  build-msix:
+    needs: [test, e2etests]
+    if: false # Paused for alpha.4; ship Inno setup and portable ZIP artifacts only.
+    runs-on: ${{ matrix.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+        include:
+          - rid: win-x64
+            platform: x64
+          - rid: win-arm64
+            platform: ARM64
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET 10 for VS MSBuild
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 10.0.100
+
+    - name: Pin .NET SDK for MSIX packaging
+      shell: pwsh
+      run: |
+        $globalJson = Get-Content global.json -Raw | ConvertFrom-Json
+        $globalJson.sdk.rollForward = "disable"
+        $globalJson | ConvertTo-Json -Depth 5 | Set-Content global.json
+        dotnet --version
+
+    - name: Cache NuGet packages
+      continue-on-error: true
+      uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Restore
+      run: dotnet restore src/OpenClaw.Tray.WinUI -r ${{ matrix.rid }}
+
+    - name: Patch MSIX manifest metadata
+      shell: pwsh
+      run: |
+        $version = "${{ needs.test.outputs.majorMinorPatch }}.0"
+        $isAlpha = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') }}" -eq "true"
+        $identityName = if ($isAlpha) { "OpenClaw.Companion.Alpha" } else { "OpenClaw.Companion" }
+        $displayName = if ($isAlpha) { "OpenClaw Companion Alpha" } else { "OpenClaw Companion" }
+        $manifest = "src/OpenClaw.Tray.WinUI/Package.appxmanifest"
+        [xml]$xml = Get-Content $manifest
+        $xml.Package.Identity.Name = $identityName
+        $xml.Package.Identity.Version = $version
+        $xml.Package.Properties.DisplayName = $displayName
+        $xml.Package.Applications.Application.VisualElements.DisplayName = $displayName
+        $xml.Save((Resolve-Path $manifest))
+        Write-Host "Patched MSIX manifest to identity $identityName, display name '$displayName', version $version"
+
+    - name: Build MSIX Package
+      run: >
+        msbuild src/OpenClaw.Tray.WinUI/OpenClaw.Tray.WinUI.csproj
+        /p:Configuration=Release
+        /p:RuntimeIdentifier=${{ matrix.rid }}
+        /p:Platform=${{ matrix.platform }}
+        /p:PackageMsix=true
+        /p:GenerateAppxPackageOnBuild=true
+        /p:AppxPackageSigningEnabled=false
+        /p:AppxBundle=Never
+        /p:UapAppxPackageBuildMode=SideloadOnly
+        /p:AppxPackageDir=AppPackages\
+
+    - name: Find MSIX Package
+      id: find-msix
+      shell: pwsh
+      run: |
+        $msix = Get-ChildItem -Path src/OpenClaw.Tray.WinUI/AppPackages -Recurse -Filter "*.msix" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $msix) {
+          Write-Error "No MSIX package found in AppPackages directory"
+          exit 1
+        }
+        Write-Host "Found: $($msix.FullName)"
+        echo "msix_path=$($msix.FullName)" >> $env:GITHUB_OUTPUT
+        echo "msix_name=$($msix.Name)" >> $env:GITHUB_OUTPUT
+
+    - name: Upload MSIX Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: openclaw-msix-${{ matrix.rid }}
+        path: ${{ steps.find-msix.outputs.msix_path }}
+
+  release:
+    needs: [repo-hygiene, test, e2etests, build]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.repo-hygiene.result == 'success' && needs.test.result == 'success' && needs.e2etests.result == 'success' && needs.build.result == 'success' && !cancelled()
+    runs-on: windows-latest
+    environment: release-signing
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Download win-x64 tray artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: openclaw-tray-win-x64
+        path: artifacts/tray-win-x64
+
+    - name: Download win-arm64 tray artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: openclaw-tray-win-arm64
+        path: artifacts/tray-win-arm64
+
+    - name: Disable NuGet source mapping for signing
+      shell: pwsh
+      run: |
+        if (Test-Path NuGet.Config) {
+          Rename-Item NuGet.Config NuGet.Config.signing.bak -Force
+        }
+
+    # Sign release artifacts on the x64 runner (ARM64 runner can't run the signing dlib).
+    - name: Azure Login for Release Signing
+      uses: azure/login@v3
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Stage x64 OpenClaw Executables for Signing
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path signing-input-x64 -Force | Out-Null
+        New-Item -ItemType HardLink -Path signing-input-x64\OpenClaw.Tray.WinUI.exe -Target artifacts\tray-win-x64\OpenClaw.Tray.WinUI.exe | Out-Null
+
+    - name: Stage ARM64 OpenClaw Executables for Signing
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path signing-input-arm64 -Force | Out-Null
+        New-Item -ItemType HardLink -Path signing-input-arm64\OpenClaw.Tray.WinUI.exe -Target artifacts\tray-win-arm64\OpenClaw.Tray.WinUI.exe | Out-Null
+
+    - name: Sign x64 OpenClaw Executables
+      uses: azure/artifact-signing-action@v2
+      with:
+        endpoint: https://eus.codesigning.azure.net/
+        signing-account-name: openclaw
+        certificate-profile-name: openclaw
+        files-folder: signing-input-x64
+        files-folder-filter: exe
+        files-folder-depth: 1
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com
+        timestamp-digest: SHA256
+
+    - name: Sign ARM64 OpenClaw Executables
+      uses: azure/artifact-signing-action@v2
+      with:
+        endpoint: https://eus.codesigning.azure.net/
+        signing-account-name: openclaw
+        certificate-profile-name: openclaw
+        files-folder: signing-input-arm64
+        files-folder-filter: exe
+        files-folder-depth: 1
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com
+        timestamp-digest: SHA256
+
+    - name: Verify x64 Release Executable Signing Policy
+      shell: pwsh
+      run: .\scripts\Test-ReleaseExecutableSignatures.ps1 -PayloadPath artifacts/tray-win-x64 -RequireSignedOpenClaw
+
+    - name: Verify ARM64 Release Executable Signing Policy
+      shell: pwsh
+      run: .\scripts\Test-ReleaseExecutableSignatures.ps1 -PayloadPath artifacts/tray-win-arm64 -RequireSignedOpenClaw
+
+    - name: Verify x64 Release Native Dependencies
+      shell: pwsh
+      run: .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath artifacts/tray-win-x64 -RequireAppLocalVCRuntime
+
+    - name: Verify ARM64 Release Native Dependencies
+      shell: pwsh
+      # -SkipNativeLoadProbe: this release job runs on the x64 windows-latest
+      # runner and cannot LoadLibrary an ARM64 DLL. The signature and presence
+      # checks still run.
+      run: .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath artifacts/tray-win-arm64 -RequireAppLocalVCRuntime -SkipNativeLoadProbe
+
+    - name: Download Visual C++ Runtime Redistributables
+      shell: pwsh
+      run: |
+        $redists = @(
+          @{ Uri = "https://aka.ms/vc14/vc_redist.x64.exe"; Path = "vc_redist.x64.exe" },
+          @{ Uri = "https://aka.ms/vc14/vc_redist.arm64.exe"; Path = "vc_redist.arm64.exe" }
+        )
+
+        foreach ($redist in $redists) {
+          Invoke-WebRequest -Uri $redist.Uri -OutFile $redist.Path
+          $signature = Get-AuthenticodeSignature -LiteralPath $redist.Path
+          if ($signature.Status -ne "Valid") {
+            throw "$($redist.Path) Authenticode signature was $($signature.Status)."
+          }
+          $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { "" }
+          if ($subject -notmatch "O=Microsoft Corporation") {
+            throw "$($redist.Path) signer was not Microsoft Corporation: $subject"
+          }
+        }
+
+    # Create ZIP files for Updatum auto-update (asset name must contain the RID).
+    # We ship both x64 and arm64 portables now that the build job produces an
+    # app-local VC runtime for both architectures (the
+    # arm64 leg sources its loose Microsoft.VC*.CRT DLLs from the VS install
+    # on the windows-11-arm runner; see src/Directory.Build.targets).
+    - name: Create x64 Release ZIP
+      run: |
+        Compress-Archive -Path artifacts/tray-win-x64/* -DestinationPath OpenClawTray-${{ needs.test.outputs.semVer }}-win-x64.zip
+
+    - name: Create arm64 Release ZIP
+      run: |
+        Compress-Archive -Path artifacts/tray-win-arm64/* -DestinationPath OpenClawTray-${{ needs.test.outputs.semVer }}-win-arm64.zip
+
+    # Inno Setup installer for x64
+    - name: Install Inno Setup
+      run: choco install innosetup -y
+
+    - name: Build x64 Installer
+      run: |
+        # Prepare x64 files
+        mkdir publish-x64
+        copy artifacts/tray-win-x64/* publish-x64/ -Recurse
+        .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath publish-x64 -RequireAppLocalVCRuntime -RequireInstallerVCRedist -InstallerVCRedistPath vc_redist.x64.exe
+        # Build installer
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ needs.test.outputs.majorMinorPatch }} /DMyAppArch=x64 /Dpublish=publish-x64 /DvcRedist=vc_redist.x64.exe installer.iss
+
+    - name: Build arm64 Installer
+      run: |
+        # Prepare arm64 files
+        mkdir publish-arm64
+        copy artifacts/tray-win-arm64/* publish-arm64/ -Recurse
+        # -RequireAppLocalVCRuntime: arm64 payload now ships VC runtime DLLs from the build job.
+        # -SkipNativeLoadProbe:      this verifier runs on the x64 release runner and cannot
+        #                             LoadLibrary an arm64 DLL.
+        .\scripts\Test-ReleaseNativeDependencies.ps1 -PayloadPath publish-arm64 -RequireAppLocalVCRuntime -RequireInstallerVCRedist -InstallerVCRedistPath vc_redist.arm64.exe -SkipNativeLoadProbe
+        # Build installer
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ needs.test.outputs.majorMinorPatch }} /DMyAppArch=arm64 /Dpublish=publish-arm64 /DvcRedist=vc_redist.arm64.exe installer.iss
+
+    - name: Sign Installers
+      uses: azure/artifact-signing-action@v2
+      with:
+        endpoint: https://eus.codesigning.azure.net/
+        signing-account-name: openclaw
+        certificate-profile-name: openclaw
+        files-folder: Output
+        files-folder-filter: exe
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com
+        timestamp-digest: SHA256
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v3
+      with:
+        generate_release_notes: true
+        files: |
+          Output/OpenClawCompanion-Setup-x64.exe
+          Output/OpenClawCompanion-Setup-arm64.exe
+          OpenClawTray-${{ needs.test.outputs.semVer }}-win-x64.zip
+          OpenClawTray-${{ needs.test.outputs.semVer }}-win-arm64.zip
+        prerelease: ${{ contains(github.ref_name, '-') }}
+        make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
+        body: |
+          ## OpenClaw Windows Hub ${{ github.ref_name }}
+
+          ### Downloads
+          - **Installer (x64)**: `OpenClawCompanion-Setup-x64.exe` - Intel/AMD 64-bit
+          - **Installer (ARM64)**: `OpenClawCompanion-Setup-arm64.exe` - Windows on ARM (Surface, etc.)
+          - **Portable x64**: `OpenClawTray-${{ needs.test.outputs.semVer }}-win-x64.zip`
+          - **Portable ARM64**: `OpenClawTray-${{ needs.test.outputs.semVer }}-win-arm64.zip`
+
+          ### Features
+          - 🦞 System tray integration with gateway status
+          - 🔄 Auto-updates from GitHub Releases
+          - ✅ Code-signed with Azure Artifact Signing
+
+          ### Requirements
+          - Windows 10 version 1903 or later
+          - [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+          - OpenClaw gateway running locally
+
+          ### Quick Start
+          1. Run the installer for your architecture
+          2. Launch from Start Menu or system tray
+          3. Right-click tray icon → Settings to configure

@@ -1,0 +1,74 @@
+{
+  "mode": "gateway",
+  "agentId": "main",
+  "policy": {
+    "userInvocableOnly": true,
+    "includeReady": true,
+    "includeEnvOnlySetup": true,
+    "excludeNames": [
+      "acp-router",
+      "browser-automation",
+      "canvas",
+      "healthcheck",
+      "node-connect",
+      "node-inspect-debugger",
+      "python-debugpy",
+      "session-logs",
+      "skill-creator",
+      "spike"
+    ],
+    "excludeNamePatterns": [
+      "debug",
+      "debugger",
+      "inspect",
+      "spike"
+    ]
+  },
+  "labels": {
+    "clawhub": {
+      "name": "ClawHub",
+      "emoji": "发现",
+      "description": "在能力不够用时，从 ClawHub 搜索、安装、校验或同步技能。"
+    },
+    "diagram-maker": {
+      "name": "流程图",
+      "emoji": "图表",
+      "description": "用 SVG/HTML 或 Excalidraw 画概念、架构、流程与白板图。"
+    },
+    "meme-maker": {
+      "name": "表情包",
+      "emoji": "趣味",
+      "description": "搜索表情模板、推荐格式，并生成本地或在线表情包图片。"
+    },
+    "notion": {
+      "name": "Notion",
+      "emoji": "笔记",
+      "description": "读写 Notion 页面、Markdown 内容、数据库、文件、评论与搜索。"
+    },
+    "openai-whisper-api": {
+      "name": "语音转写",
+      "emoji": "语音",
+      "description": "通过 OpenAI 语音转写接口，把音频转成文字（需 API Key）。"
+    },
+    "taskflow": {
+      "name": "任务流",
+      "emoji": "流程",
+      "description": "把多步骤后台任务收成一条可追踪的任务流，含状态、等待与子任务。"
+    },
+    "taskflow-inbox-triage": {
+      "name": "收件分拣",
+      "emoji": "收件",
+      "description": "示例任务流：收件分拣、意图路由、等待回复，以及后续摘要。"
+    },
+    "video-frames": {
+      "name": "视频截帧",
+      "emoji": "视频",
+      "description": "用 ffmpeg 从视频中提取画面帧或短片段。"
+    },
+    "weather": {
+      "name": "天气查询",
+      "emoji": "天气",
+      "description": "查询当前天气与预报，支持出行、温度与降雨等信息。"
+    }
+  }
+}

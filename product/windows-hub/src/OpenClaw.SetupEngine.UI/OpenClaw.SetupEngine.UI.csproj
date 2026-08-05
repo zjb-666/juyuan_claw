@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <UseWinUI>true</UseWinUI>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>OpenClaw.SetupEngine.UI</RootNamespace>
+    <AssemblyName>OpenClaw.SetupEngine.UI</AssemblyName>
+    <Platforms>x64;ARM64</Platforms>
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(MicrosoftWindowsAppSDKVersion)" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="$(MicrosoftWindowsSdkBuildToolsVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenClaw.SetupEngine\OpenClaw.SetupEngine.csproj" />
+    <ProjectReference Include="..\OpenClaw.Shared\OpenClaw.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- Reuse Setup assets from the Tray project -->
+  <ItemGroup>
+    <Content Include="..\OpenClaw.Tray.WinUI\Assets\Setup\**\*"
+             Link="Assets\Setup\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Bundle default config -->
+  <ItemGroup>
+    <Content Include="..\OpenClaw.SetupEngine\default-config.json"
+             Link="default-config.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>OpenClawTray.FunctionalUI</RootNamespace>
+    <AssemblyName>OpenClawTray.FunctionalUI</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWinUI>true</UseWinUI>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(MicrosoftWindowsAppSDKVersion)" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="$(MicrosoftWindowsSdkBuildToolsVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenClaw.Shared\OpenClaw.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>OpenClawTray.FunctionalUI.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>OpenClaw.Tray.UITests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

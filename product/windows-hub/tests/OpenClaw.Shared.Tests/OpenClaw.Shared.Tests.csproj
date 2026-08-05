@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenClaw.Shared\OpenClaw.Shared.csproj" />
+    <ProjectReference Include="..\OpenClaw.TestSupport\OpenClaw.TestSupport.csproj" />
+    <ProjectReference Include="..\OpenClaw.Shared.TestHost\OpenClaw.Shared.TestHost.csproj"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\OpenClaw.Cli\OpenClaw.Cli.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Mxc\Golden\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
