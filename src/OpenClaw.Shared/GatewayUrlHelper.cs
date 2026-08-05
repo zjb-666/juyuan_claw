@@ -1,0 +1,175 @@
+using System;
+using System.Buffers;
+
+namespace OpenClaw.Shared;
+
+public static class GatewayUrlHelper
+{
+    public const string ValidationMessage = "Gateway URL must be a valid URL (ws://, wss://, http://, or https://).";
+
+    private static readonly SearchValues<char> s_authorityTerminators =
+        SearchValues.Create("/?#");
+
+    public static bool IsValidGatewayUrl(string? gatewayUrl) =>
+        TryNormalizeWebSocketUrl(gatewayUrl, out _);
+
+    public static string NormalizeForWebSocket(string? gatewayUrl) =>
+        TryNormalizeWebSocketUrl(gatewayUrl, out var normalizedUrl)
+            ? normalizedUrl
+            : gatewayUrl?.Trim() ?? string.Empty;
+
+    /// <summary>
+    /// Extract credentials from gateway URL user-info (username:password).
+    /// The returned value may include URL-encoded characters and should be decoded before
+    /// constructing an Authorization header.
+    /// </summary>
+    public static string? ExtractCredentials(string gatewayUrl)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(gatewayUrl.Trim(), UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        return string.IsNullOrEmpty(uri.UserInfo) ? null : uri.UserInfo;
+    }
+
+    /// <summary>
+    /// Decode URL-encoded credentials from URL user-info format (username:password).
+    /// Username-only input is normalized to username: for HTTP Basic Auth.
+    /// Returns the original value if decoding fails.
+    /// </summary>
+    public static string DecodeCredentials(string credentials)
+    {
+        if (string.IsNullOrEmpty(credentials))
+        {
+            return credentials;
+        }
+
+        var separatorIndex = credentials.IndexOf(':');
+        if (separatorIndex < 0)
+        {
+            try
+            {
+                return $"{Uri.UnescapeDataString(credentials)}:";
+            }
+            catch (UriFormatException)
+            {
+                return $"{credentials}:";
+            }
+        }
+
+        var username = credentials[..separatorIndex];
+        var password = credentials[(separatorIndex + 1)..];
+
+        try
+        {
+            return $"{Uri.UnescapeDataString(username)}:{Uri.UnescapeDataString(password)}";
+        }
+        catch (UriFormatException)
+        {
+            return credentials;
+        }
+    }
+
+    /// <summary>
+    /// Remove user-info credentials plus query/fragment data from a URL for safe
+    /// logging and display. Gateway URLs can carry token-like query parameters
+    /// even when the connection stack does not normally use them.
+    /// </summary>
+    public static string SanitizeForDisplay(string? gatewayUrl)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+        {
+            return gatewayUrl?.Trim() ?? string.Empty;
+        }
+
+        return RemoveQueryAndFragment(RemoveUserInfo(gatewayUrl.Trim()));
+    }
+
+    public static bool TryNormalizeWebSocketUrl(string? gatewayUrl, out string normalizedUrl)
+    {
+        normalizedUrl = string.Empty;
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+        {
+            return false;
+        }
+
+        var trimmed = gatewayUrl.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        string candidate;
+        if (uri.Scheme.Equals("ws", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = trimmed;
+        }
+        else
+        {
+            var schemeSeparator = trimmed.IndexOf("://", StringComparison.Ordinal);
+            if (schemeSeparator < 0)
+            {
+                return false;
+            }
+
+            var remainder = trimmed[schemeSeparator..];
+            if (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = "ws" + remainder;
+            }
+            else if (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = "wss" + remainder;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        normalizedUrl = RemoveUserInfo(candidate);
+        return true;
+    }
+
+    private static string RemoveUserInfo(string url)
+    {
+        var schemeSeparator = url.IndexOf("://", StringComparison.Ordinal);
+        if (schemeSeparator < 0)
+        {
+            return url;
+        }
+
+        var authorityStart = schemeSeparator + 3;
+        var relativeEnd = url.AsSpan(authorityStart).IndexOfAny(s_authorityTerminators);
+        var authorityEnd = relativeEnd < 0 ? url.Length : authorityStart + relativeEnd;
+
+        var atIndex = url.IndexOf('@', authorityStart);
+        if (atIndex < 0 || atIndex >= authorityEnd)
+        {
+            return url;
+        }
+
+        return string.Concat(url.AsSpan(0, authorityStart), url.AsSpan(atIndex + 1));
+    }
+
+    private static string RemoveQueryAndFragment(string url)
+    {
+        var queryIndex = url.IndexOf('?');
+        var fragmentIndex = url.IndexOf('#');
+        var cutIndex = queryIndex switch
+        {
+            >= 0 when fragmentIndex >= 0 => Math.Min(queryIndex, fragmentIndex),
+            >= 0 => queryIndex,
+            _ => fragmentIndex
+        };
+
+        return cutIndex >= 0 ? url[..cutIndex] : url;
+    }
+}

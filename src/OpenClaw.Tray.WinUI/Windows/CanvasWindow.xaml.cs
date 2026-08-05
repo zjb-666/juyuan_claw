@@ -1,0 +1,917 @@
+using System;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.Web.WebView2.Core;
+using OpenClaw.Shared;
+using OpenClawTray.Helpers;
+using OpenClawTray.Services;
+using WinUIEx;
+using Windows.Foundation;
+using Windows.Storage.Streams;
+using Windows.System;
+
+namespace OpenClawTray.Windows;
+
+/// <summary>
+/// Canvas window - WebView2-based surface for displaying agent content
+/// </summary>
+public sealed partial class CanvasWindow : WindowEx
+{
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    private const int SW_SHOWNORMAL = 1;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_SHOWWINDOW = 0x0040;
+
+    private bool _isWebViewInitialized;
+    private bool _isFullScreen;
+    private string? _pendingUrl;
+    private string? _pendingHtml;
+    private readonly TaskCompletionSource<bool> _webViewReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<bool>? _navigationTcs;
+
+    private readonly string _canvasDir = Path.Combine(
+        AppIdentity.ResolveLocalDataDirectory(), "canvas");
+    private FileSystemWatcher? _canvasWatcher;
+    private long _lastReloadTicks = 0;
+
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue? _dispatcherQueue;
+    private TypedEventHandler<CoreWebView2, CoreWebView2WebMessageReceivedEventArgs>? _webMessageReceivedHandler;
+    private TypedEventHandler<CoreWebView2, CoreWebView2WebResourceRequestedEventArgs>? _webResourceRequestedHandler;
+    private string? _webResourceRequestedFilter;
+
+    /// <summary>
+    /// Fired when the SPA sends a message to the native side via
+    /// <c>window.chrome.webview.postMessage(...)</c>.
+    /// </summary>
+    public event EventHandler<WebBridgeMessage>? BridgeMessageReceived;
+    
+    // HTML sanitization — block embedded iframes/objects/embeds/applets
+    private static readonly Regex s_sanitizeBlock = new(
+        @"<\s*(iframe|object|embed|applet)\b[^>]*>.*?<\s*/\s*\1\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex s_sanitizeSelfClose = new(
+        @"<\s*(iframe|object|embed|applet)\b[^>]*/?\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // URL validation - block dangerous schemes and private networks (IPv4 + IPv6)
+    private static readonly Regex DangerousUrlPattern = new(
+        @"^(file|javascript|data|vbscript):|" +                           // Dangerous schemes
+        @"^https?://(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)|" + // Private IPv4
+        @"^https?://\[(::1|0:0:0:0:0:0:0:1|::)\]",                        // IPv6 localhost
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    
+    /// <summary>
+    /// Validates a URL for security - returns true if URL is safe
+    /// </summary>
+    private bool IsUrlSafe(string url)
+    {
+        if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsSafeDataUrl(url);
+        }
+        // Allow URLs from the canvas virtual host
+        if (url.StartsWith("https://openclaw-canvas.local/", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("https://openclaw-canvas.local", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        // Allow URLs from the trusted gateway origin with strict boundary check
+        if (!string.IsNullOrEmpty(_trustedGatewayOrigin) &&
+            url.StartsWith(_trustedGatewayOrigin, StringComparison.OrdinalIgnoreCase) &&
+            (url.Length == _trustedGatewayOrigin.Length ||
+             url[_trustedGatewayOrigin.Length] == '/' ||
+             url[_trustedGatewayOrigin.Length] == '?' ||
+             url[_trustedGatewayOrigin.Length] == '#'))
+        {
+            return true;
+        }
+        // Host-normalizing private/loopback guard. The DangerousUrlPattern regex only blocks the
+        // literal dotted-decimal spelling, so encoded IPv4 (2130706433 / 0x7f000001 / 0177.0.0.1),
+        // IPv6 (::1, ::ffff:127.0.0.1, fd00::/fe80::), 0.0.0.0, and CGNAT/Tailscale (100.64/10)
+        // slip through — this is the load-bearing SSRF check for canvas.present, which reaches the
+        // WebView through IsUrlSafe without the navigate command's HttpUrlRiskEvaluator.
+        if (Uri.TryCreate(url, UriKind.Absolute, out var parsedUri) &&
+            OpenClaw.Shared.CanvasUrlSafety.IsPrivateOrLoopbackHost(parsedUri.Host))
+        {
+            return false;
+        }
+        return !DangerousUrlPattern.IsMatch(url);
+    }
+    
+    private static bool IsSafeDataUrl(string url)
+    {
+        // Allow only text/html and text/plain data URLs
+        var commaIndex = url.IndexOf(',');
+        if (commaIndex < 0) return false;
+        
+        var header = url.Substring(5, commaIndex - 5);
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            // Defaults to text/plain;charset=US-ASCII per RFC 2397
+            return true;
+        }
+        
+        var mediaType = header.Split(';', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        if (string.IsNullOrEmpty(mediaType))
+        {
+            return true;
+        }
+        
+        return mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase) ||
+               mediaType.Equals("text/plain", StringComparison.OrdinalIgnoreCase);
+    }
+    
+    public bool IsClosed { get; private set; }
+    private string? _trustedGatewayOrigin;
+    private string? _configuredGatewayOrigin;
+    private string? _gatewayOriginForRewrite;
+    private string? _gatewayToken;
+
+    /// <summary>
+    /// Allow URLs from the connected gateway origin. Call after creating the window
+    /// so that canvas.present URLs served by the gateway are not blocked.
+    /// Also rewrites gateway URLs to use the node's effective connection
+    /// (e.g., localhost when connected via SSH tunnel).
+    /// </summary>
+    public void SetTrustedGatewayOrigin(string? gatewayUrl, string? token = null, string? configuredGatewayUrl = null)
+    {
+        if (string.IsNullOrEmpty(gatewayUrl))
+        {
+            _gatewayToken = null;
+            _trustedGatewayOrigin = null;
+            _configuredGatewayOrigin = null;
+            _gatewayOriginForRewrite = null;
+            if (CanvasWebView.CoreWebView2 != null)
+                RemoveGatewayAuthHeaderInjection(CanvasWebView.CoreWebView2);
+            return;
+        }
+        _gatewayToken = token;
+        try
+        {
+            _trustedGatewayOrigin = CanvasGatewayUrlRewriter.ToHttpOrigin(gatewayUrl);
+            _configuredGatewayOrigin = string.IsNullOrWhiteSpace(configuredGatewayUrl)
+                ? _trustedGatewayOrigin
+                : CanvasGatewayUrlRewriter.ToHttpOrigin(configuredGatewayUrl);
+            _gatewayOriginForRewrite = _trustedGatewayOrigin;
+            Logger.Info($"[Canvas] Trusted gateway origin: {_trustedGatewayOrigin}; configured gateway origin: {_configuredGatewayOrigin}");
+            ConfigureGatewayAuthHeaderInjection();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Canvas] Failed to parse gateway origin: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Rewrite a gateway URL to use the node's effective connection.
+    /// If connected via SSH tunnel to localhost, rewrites 192.168.x.x → localhost.
+    /// </summary>
+    private string RewriteGatewayUrl(string url)
+    {
+        if (string.IsNullOrEmpty(_gatewayOriginForRewrite)) return url;
+
+        try
+        {
+            // Handle relative paths — prepend the gateway origin
+            var rewritten = CanvasGatewayUrlRewriter.Rewrite(url, _gatewayOriginForRewrite, _configuredGatewayOrigin);
+            if (!string.Equals(url, rewritten, StringComparison.Ordinal))
+            {
+                rewritten = AppendGatewayToken(rewritten);
+                Logger.Info(url.StartsWith("/", StringComparison.Ordinal)
+                    ? "[Canvas] Resolved relative URL to gateway origin"
+                    : "[Canvas] Rewrote URL to effective gateway origin");
+                return rewritten;
+            }
+
+            // Same origin — just add token if needed
+            url = AppendGatewayToken(url);
+
+            // If this is a canvas document path and we have it locally, use the virtual host
+            if (url.Contains("/__openclaw__/canvas/documents/") && !string.IsNullOrEmpty(_canvasDir))
+            {
+                var pathPart = new Uri(url).AbsolutePath;
+                var localRelative = pathPart.Replace("/__openclaw__/canvas/documents/", "");
+                var localPath = Path.GetFullPath(Path.Combine(_canvasDir, localRelative.Replace('/', Path.DirectorySeparatorChar)));
+                // Containment check — block directory traversal
+                if (localPath.StartsWith(_canvasDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                    File.Exists(localPath))
+                {
+                    var localUrl = $"https://openclaw-canvas.local/{localRelative}";
+                    Logger.Info($"[Canvas] Using local file: {localUrl}");
+                    return localUrl;
+                }
+            }
+
+            return url;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Canvas] URL rewrite failed: {ex.Message}");
+        }
+        return url;
+    }
+
+    private string AppendGatewayToken(string url)
+    {
+        // Auth is handled via WebResourceRequested Bearer header injection,
+        // not query params. This method is kept as a no-op for safety.
+        return url;
+    }
+    
+    public CanvasWindow()
+    {
+        this.InitializeComponent();
+        Title = AppIdentity.DecorateWindowTitle("聚元灵创画布");
+        AutomationProperties.SetName(
+            CanvasTitlebarReloadButton,
+            LocalizationHelper.GetString("CanvasReloadButton_AutomationName"));
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+        this.SetIcon("Assets\\openclaw.ico");
+        _dispatcherQueue = DispatcherQueue;
+        this.Closed += OnWindowClosed;
+
+        // F11 toggles borderless fullscreen; Escape exits it.
+        // KeyboardAccelerators on the root content get first-class handling
+        // when focus is in the XAML tree (title bar, toolbar, etc.).
+        // When focus is inside the WebView2, F11/Escape are also intercepted
+        // via an injected content script that posts bridge messages.
+        if (this.Content is FrameworkElement contentRoot)
+        {
+            var f11Accel = new KeyboardAccelerator { Key = VirtualKey.F11 };
+            f11Accel.Invoked += (_, args) =>
+            {
+                args.Handled = true;
+                ToggleFullScreen();
+            };
+            var escAccel = new KeyboardAccelerator { Key = VirtualKey.Escape };
+            escAccel.Invoked += (_, args) =>
+            {
+                if (_isFullScreen) { args.Handled = true; ExitFullScreen(); }
+            };
+            contentRoot.KeyboardAccelerators.Add(f11Accel);
+            contentRoot.KeyboardAccelerators.Add(escAccel);
+            contentRoot.KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden;
+        }
+
+        // Initialize WebView2
+        InitializeWebViewAsync();
+    }
+    
+    private void InitializeWebViewAsync() =>
+        AsyncEventHandlerGuard.Run(
+            InitializeWebViewCoreAsync,
+            new OpenClawTray.AppLogger(),
+            nameof(InitializeWebViewAsync));
+
+    private async Task InitializeWebViewCoreAsync()
+    {
+        try
+        {
+            LoadingRing.IsActive = true;
+            CanvasWebView.Visibility = Visibility.Collapsed;
+            ErrorPanel.Visibility = Visibility.Collapsed;
+            
+            await CanvasWebView.EnsureCoreWebView2Async();
+
+            // Map local canvas files to a virtual hostname so canvas content
+            // can be served without hitting the gateway HTTP server.
+            // Files in %LOCALAPPDATA%/OpenClawTray/canvas/ are served at
+            // https://openclaw-canvas.local/
+            Directory.CreateDirectory(_canvasDir);
+            CanvasWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "openclaw-canvas.local",
+                _canvasDir,
+                CoreWebView2HostResourceAccessKind.Allow);
+            Logger.Info($"[Canvas] Virtual host mapped: openclaw-canvas.local → {_canvasDir}");
+
+            // Watch for local canvas file changes and auto-reload
+            _canvasWatcher = new FileSystemWatcher(_canvasDir)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                EnableRaisingEvents = true
+            };
+            _canvasWatcher.Changed += OnCanvasFileChanged;
+            _canvasWatcher.Created += OnCanvasFileChanged;
+            _canvasWatcher.Renamed += (s, e) => OnCanvasFileChanged(s, e);
+
+            // Configure WebView2
+            CanvasWebView.CoreWebView2.Settings.IsScriptEnabled = true;
+            CanvasWebView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
+            CanvasWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            CanvasWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+
+            // Inject F11/Escape fullscreen bridge: intercepts these keys when
+            // WebView2 content has focus and routes them as bridge messages so
+            // the native window can toggle its presenter the same way the XAML
+            // keyboard accelerators do when focus is in the title bar.
+            await CanvasWebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync("""
+                (function () {
+                    document.addEventListener('keydown', function (e) {
+                        if (!window.chrome || !window.chrome.webview) return;
+                        if (e.key === 'F11') {
+                            e.preventDefault();
+                            window.chrome.webview.postMessage({ type: 'fullscreen-toggle' });
+                        } else if (e.key === 'Escape') {
+                            window.chrome.webview.postMessage({ type: 'fullscreen-exit' });
+                        }
+                    }, true);
+                })();
+                """);
+
+            // Wire the bidirectional native↔SPA bridge
+            // SPA → native: window.chrome.webview.postMessage({ type, payload })
+            _webMessageReceivedHandler = (s, e) =>
+            {
+                if (!IsTrustedBridgeSource(e.Source))
+                {
+                    Logger.Warn($"[Canvas] rejected bridge message from untrusted source {SanitizeBridgeLogValue(e.Source)}");
+                    return;
+                }
+
+                var msg = WebBridgeMessage.TryParse(e.WebMessageAsJson);
+                if (msg != null)
+                {
+                    // Fullscreen control messages are handled natively and not
+                    // forwarded to external bridge subscribers.
+                    if (msg.Type == WebBridgeMessage.TypeFullscreenToggle)
+                    {
+                        _dispatcherQueue?.TryEnqueue(ToggleFullScreen);
+                        return;
+                    }
+                    if (msg.Type == WebBridgeMessage.TypeFullscreenExit)
+                    {
+                        _dispatcherQueue?.TryEnqueue(ExitFullScreen);
+                        return;
+                    }
+
+                    Logger.Debug($"[Canvas] bridge message from SPA, type={SanitizeBridgeLogValue(msg.Type)}");
+                    BridgeMessageReceived?.Invoke(this, msg);
+                }
+                else
+                {
+                    Logger.Warn("[Canvas] received unrecognised bridge message");
+                }
+            };
+            CanvasWebView.CoreWebView2.WebMessageReceived += _webMessageReceivedHandler;
+
+            ConfigureGatewayAuthHeaderInjection();
+
+            // Handle navigation events
+            CanvasWebView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+            
+            _isWebViewInitialized = true;
+            _webViewReadyTcs.TrySetResult(true);
+            
+            LoadingRing.IsActive = false;
+            CanvasWebView.Visibility = Visibility.Visible;
+            
+            // Load pending content (re-validate for security)
+            if (_pendingUrl != null)
+            {
+                var url = _pendingUrl;
+                _pendingUrl = null;
+                
+                // Re-validate URL before navigation (defense in depth)
+                if (IsUrlSafe(url))
+                {
+                    CanvasWebView.CoreWebView2.Navigate(url);
+                }
+                else
+                {
+                    Logger.Warn($"[Canvas] Blocked pending URL: {url.Substring(0, Math.Min(50, url.Length))}...");
+                }
+            }
+            else if (_pendingHtml != null)
+            {
+                var html = _pendingHtml;
+                _pendingHtml = null;
+                CanvasWebView.CoreWebView2.NavigateToString(html);
+            }
+            else
+            {
+                // Default blank page with styling
+                CanvasWebView.CoreWebView2.NavigateToString($@"
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body {{ 
+                                margin: 0; 
+                                padding: 20px;
+                                font-family: 'Segoe UI', sans-serif;
+                                background: transparent;
+                                color: #333;
+                            }}
+                            @media (prefers-color-scheme: dark) {{
+                                body {{ color: #eee; }}
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <h2>{LocalizationHelper.GetString("Canvas_ReadyTitle")}</h2>
+                        <p>{LocalizationHelper.GetString("Canvas_WaitingForContent")}</p>
+                    </body>
+                    </html>
+                ");
+            }
+        }
+        catch (Exception ex)
+        {
+            LoadingRing.IsActive = false;
+            ErrorPanel.Visibility = Visibility.Visible;
+            ErrorText.Text = LocalizationHelper.Format("CanvasWindow_WebViewInitFailedFormat", ex.Message);
+            _webViewReadyTcs.TrySetException(ex);
+        }
+    }
+
+    private void ConfigureGatewayAuthHeaderInjection()
+    {
+        var coreWebView2 = CanvasWebView.CoreWebView2;
+        if (coreWebView2 == null)
+            return;
+
+        RemoveGatewayAuthHeaderInjection(coreWebView2);
+
+        if (string.IsNullOrEmpty(_trustedGatewayOrigin) || string.IsNullOrEmpty(_gatewayToken))
+            return;
+
+        _webResourceRequestedFilter = $"{_trustedGatewayOrigin}/*";
+        _webResourceRequestedHandler = OnGatewayWebResourceRequested;
+        coreWebView2.AddWebResourceRequestedFilter(_webResourceRequestedFilter, CoreWebView2WebResourceContext.All);
+        coreWebView2.WebResourceRequested += _webResourceRequestedHandler;
+        Logger.Info("[Canvas] WebView2 auth header injection configured for gateway requests");
+    }
+
+    private void RemoveGatewayAuthHeaderInjection(CoreWebView2 coreWebView2)
+    {
+        if (_webResourceRequestedHandler != null)
+        {
+            coreWebView2.WebResourceRequested -= _webResourceRequestedHandler;
+            _webResourceRequestedHandler = null;
+        }
+
+        if (!string.IsNullOrEmpty(_webResourceRequestedFilter))
+        {
+            coreWebView2.RemoveWebResourceRequestedFilter(_webResourceRequestedFilter, CoreWebView2WebResourceContext.All);
+            _webResourceRequestedFilter = null;
+        }
+    }
+
+    private void OnGatewayWebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+    {
+        var trustedOrigin = _trustedGatewayOrigin;
+        var token = _gatewayToken;
+        if (string.IsNullOrEmpty(trustedOrigin) || string.IsNullOrEmpty(token))
+            return;
+
+        if (IsUriForOrigin(args.Request.Uri, trustedOrigin))
+        {
+            args.Request.Headers.SetHeader("Authorization", $"Bearer {token}");
+        }
+    }
+    
+    private void OnNavigationCompleted(CoreWebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
+    {
+        if (_navigationTcs != null)
+        {
+            var tcs = _navigationTcs;
+            _navigationTcs = null;
+            if (args.IsSuccess)
+            {
+                tcs.TrySetResult(true);
+            }
+            else
+            {
+                tcs.TrySetException(new InvalidOperationException($"Navigation failed: {args.WebErrorStatus}"));
+            }
+        }
+        
+        if (!args.IsSuccess)
+        {
+            // Show error for failed navigation
+            ErrorPanel.Visibility = Visibility.Visible;
+            CanvasWebView.Visibility = Visibility.Collapsed;
+            ErrorText.Text = LocalizationHelper.Format("CanvasWindow_NavigationFailedFormat", args.WebErrorStatus);
+        }
+        else
+        {
+            ErrorPanel.Visibility = Visibility.Collapsed;
+            CanvasWebView.Visibility = Visibility.Visible;
+        }
+    }
+    
+    private void OnCanvasFileChanged(object sender, FileSystemEventArgs e)
+    {
+        // Debounce — ignore rapid file changes within 500ms (thread-safe)
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var prevTicks = Interlocked.Exchange(ref _lastReloadTicks, nowTicks);
+        if ((nowTicks - prevTicks) < TimeSpan.FromMilliseconds(500).Ticks) return;
+
+        Logger.Info($"[Canvas] File changed: {e.Name}, reloading");
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_isWebViewInitialized && !IsClosed)
+            {
+                CanvasWebView.CoreWebView2.Reload();
+            }
+        });
+    }
+
+    private void OnWindowClosed(object sender, WindowEventArgs args)
+    {
+        IsClosed = true;
+        ExitFullScreen();
+        _gatewayToken = null;
+
+        if (CanvasWebView.CoreWebView2 != null)
+        {
+            if (_webMessageReceivedHandler != null)
+            {
+                CanvasWebView.CoreWebView2.WebMessageReceived -= _webMessageReceivedHandler;
+                _webMessageReceivedHandler = null;
+            }
+            RemoveGatewayAuthHeaderInjection(CanvasWebView.CoreWebView2);
+            CanvasWebView.CoreWebView2.NavigationCompleted -= OnNavigationCompleted;
+        }
+
+        _canvasWatcher?.Dispose();
+        _canvasWatcher = null;
+        _trustedGatewayOrigin = null;
+        _configuredGatewayOrigin = null;
+        _gatewayOriginForRewrite = null;
+    }
+    
+    private void OnRetryClick(object sender, RoutedEventArgs e)
+    {
+        InitializeWebViewAsync();
+    }
+    
+    /// <summary>
+    /// Navigate to a URL (validates URL security)
+    /// </summary>
+    public void Navigate(string url)
+    {
+        // Rewrite gateway URLs to use the node's effective connection
+        // (e.g., gateway sends 192.168.1.254 but we're tunneled to localhost)
+        url = RewriteGatewayUrl(url);
+
+        // Validate URL - block dangerous schemes and private networks
+        if (!IsUrlSafe(url))
+        {
+            throw new ArgumentException($"URL blocked for security: {url.Substring(0, Math.Min(50, url.Length))}...");
+        }
+        
+        if (_isWebViewInitialized)
+        {
+            CanvasWebView.CoreWebView2.Navigate(url);
+        }
+        else
+        {
+            _pendingUrl = url;
+        }
+    }
+    
+    /// <summary>
+    /// Load HTML content directly (sanitizes embedded navigation)
+    /// </summary>
+    public void LoadHtml(string html)
+    {
+        Logger.Debug($"[Canvas] Loading HTML content ({html.Length} chars)");
+        
+        // Sanitize: strip iframes/objects/embeds that could bypass URL validation
+        html = SanitizeHtml(html);
+        
+        if (_isWebViewInitialized)
+        {
+            CanvasWebView.CoreWebView2.NavigateToString(html);
+        }
+        else
+        {
+            _pendingHtml = html;
+        }
+    }
+    
+    /// <summary>
+    /// Strip dangerous embedded elements (iframe, object, embed, applet) from HTML.
+    /// This prevents bypassing URL validation via inline HTML content.
+    /// </summary>
+    private static string SanitizeHtml(string html)
+    {
+        // Remove <iframe>, <object>, <embed>, <applet> tags and their content
+        html = s_sanitizeBlock.Replace(html, "<!-- blocked -->");
+        // Remove self-closing variants
+        html = s_sanitizeSelfClose.Replace(html, "<!-- blocked -->");
+        return html;
+    }
+    
+    /// <summary>
+    /// Execute JavaScript and return result (logs for audit)
+    /// </summary>
+    public async Task<string> EvalAsync(string script)
+    {
+        await EnsureWebViewReadyAsync();
+        if (!_isWebViewInitialized)
+            throw new InvalidOperationException("WebView2 not initialized");
+        
+        var truncatedScript = script.Length > 100 ? script.Substring(0, 100) + "..." : script;
+        Logger.Debug($"[Canvas] Executing script: {truncatedScript}");
+        
+        var result = await CanvasWebView.CoreWebView2.ExecuteScriptAsync(script);
+        return result;
+    }
+    
+    /// <summary>
+    /// Capture the canvas content as base64 image
+    /// </summary>
+    public async Task<string> CaptureSnapshotAsync(string format = "png")
+    {
+        await EnsureWebViewReadyAsync();
+        if (!_isWebViewInitialized)
+            throw new InvalidOperationException("WebView2 not initialized");
+        
+        using var stream = new InMemoryRandomAccessStream();
+        
+        var imageFormat = format.ToLowerInvariant() == "jpeg" 
+            ? CoreWebView2CapturePreviewImageFormat.Jpeg 
+            : CoreWebView2CapturePreviewImageFormat.Png;
+        
+        await CanvasWebView.CoreWebView2.CapturePreviewAsync(imageFormat, stream);
+        
+        // Read stream to bytes
+        stream.Seek(0);
+        var bytes = new byte[stream.Size];
+        using var reader = new DataReader(stream);
+        await reader.LoadAsync((uint)stream.Size);
+        reader.ReadBytes(bytes);
+        
+        return Convert.ToBase64String(bytes);
+    }
+    
+    /// <summary>
+    /// Set window position
+    /// </summary>
+    public void SetPosition(int x, int y)
+    {
+        if (x >= 0 && y >= 0)
+        {
+            this.Move(x, y);
+        }
+        else
+        {
+            // Center on screen
+            this.CenterOnScreen();
+        }
+    }
+    
+    /// <summary>
+    /// Set window size
+    /// </summary>
+    public void SetSize(int width, int height)
+    {
+        this.SetWindowSize(width, height);
+    }
+    
+    /// <summary>
+    /// Set always on top
+    /// </summary>
+    public void SetAlwaysOnTop(bool alwaysOnTop)
+    {
+        this.IsAlwaysOnTop = alwaysOnTop;
+    }
+
+    /// <summary>
+    /// Force the window to the front so canvas content is visible immediately.
+    /// </summary>
+    public void BringToFront(bool keepTopMost)
+    {
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            if (hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            ShowWindow(hwnd, SW_SHOWNORMAL);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetForegroundWindow(hwnd);
+
+            if (!keepTopMost)
+            {
+                SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            }
+        }
+        // slopwatch-ignore: SW003 UI helper action is best-effort and failure should not break the owning UI flow.
+        catch
+        {
+            // Best-effort focus behavior only.
+        }
+    }
+    
+    // ── Fullscreen ──────────────────────────────────────────────────────────
+
+    /// <summary>Toggle borderless fullscreen on F11.</summary>
+    public void ToggleFullScreen()
+    {
+        if (_isFullScreen) ExitFullScreen();
+        else EnterFullScreen();
+    }
+
+    private void EnterFullScreen()
+    {
+        _isFullScreen = true;
+        try { AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen); }
+        catch (Exception ex) { Logger.Debug($"[Canvas] EnterFullScreen failed: {ex.Message}"); }
+    }
+
+    private void ExitFullScreen()
+    {
+        if (!_isFullScreen) return;
+        _isFullScreen = false;
+        try { AppWindow.SetPresenter(AppWindowPresenterKind.Default); }
+        catch (Exception ex) { Logger.Debug($"[Canvas] ExitFullScreen failed: {ex.Message}"); }
+    }
+
+    public async Task EnsureA2UIHostAsync(string url)
+    {
+        await EnsureWebViewReadyAsync();
+        if (!_isWebViewInitialized)
+            throw new InvalidOperationException("WebView2 not initialized");
+        
+        if (!IsTrustedA2UIUrl(url))
+            throw new ArgumentException("A2UI host URL is not allowed");
+        
+        var current = CanvasWebView.CoreWebView2?.Source;
+        if (!string.IsNullOrEmpty(current) && current.StartsWith(url, StringComparison.OrdinalIgnoreCase))
+            return;
+        
+        await NavigateAndWaitAsync(url);
+    }
+    
+    private Task NavigateAndWaitAsync(string url)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _navigationTcs = tcs;
+        CanvasWebView.CoreWebView2.Navigate(url);
+        return tcs.Task;
+    }
+    
+    private static bool IsTrustedA2UIUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+        
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+        
+        return uri.AbsolutePath.StartsWith("/__openclaw__/a2ui/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUriForOrigin(string uri, string origin)
+    {
+        return uri.StartsWith(origin, StringComparison.OrdinalIgnoreCase) &&
+            (uri.Length == origin.Length ||
+             uri[origin.Length] == '/' ||
+             uri[origin.Length] == '?' ||
+             uri[origin.Length] == '#');
+    }
+    
+    private Task EnsureWebViewReadyAsync()
+    {
+        return _isWebViewInitialized ? Task.CompletedTask : _webViewReadyTcs.Task;
+    }
+
+    // ── Bridge: native → SPA ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Sends a bridge message to the SPA via the WebView2 native→web channel.
+    /// The SPA receives this via <c>window.chrome.webview.addEventListener('message', e => { const msg = e.data; ... })</c>.
+    /// Safe to call from background threads. No-op if the WebView2 core is not yet initialised.
+    /// </summary>
+    public void PostBridgeMessage(string type, object? payload = null)
+    {
+        if (IsClosed)
+            return;
+
+        if (_dispatcherQueue == null)
+        {
+            Logger.Warn("[Canvas] cannot post bridge message because DispatcherQueue is unavailable");
+            return;
+        }
+
+        if (!_dispatcherQueue.TryEnqueue(() => PostBridgeMessageOnUiThread(type, payload)))
+        {
+            Logger.Warn($"[Canvas] failed to enqueue bridge message, type={SanitizeBridgeLogValue(type)}");
+        }
+    }
+
+    private void PostBridgeMessageOnUiThread(string type, object? payload)
+    {
+        if (IsClosed || CanvasWebView.CoreWebView2 == null)
+            return;
+
+        try
+        {
+            var msg = new WebBridgeMessage(type);
+            var json = msg.ToJson(payload);
+            Logger.Debug($"[Canvas] posting bridge message, type={SanitizeBridgeLogValue(type)}");
+            CanvasWebView.CoreWebView2.PostWebMessageAsJson(json);
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.Warn($"[Canvas] invalid bridge message payload: {ex.Message}");
+        }
+        catch (COMException ex)
+        {
+            Logger.Warn($"[Canvas] bridge message post failed: {ex.Message}");
+        }
+        catch (ObjectDisposedException ex)
+        {
+            Logger.Warn($"[Canvas] bridge message post skipped after disposal: {ex.Message}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.Warn($"[Canvas] bridge message post failed: {ex.Message}");
+        }
+    }
+
+    // ── Bridge: origin validation ──────────────────────────────────────────
+
+    private bool IsTrustedBridgeSource(string? source)
+    {
+        if (!TryGetUriOrigin(source, out var sourceOrigin))
+            return false;
+
+        // Accept messages from the virtual canvas host
+        if (string.Equals(sourceOrigin.Scheme, "https", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(sourceOrigin.IdnHost, "openclaw-canvas.local", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Accept messages from the configured gateway origin
+        if (!string.IsNullOrEmpty(_trustedGatewayOrigin) &&
+            Uri.TryCreate(_trustedGatewayOrigin, UriKind.Absolute, out var gatewayUri))
+        {
+            return string.Equals(sourceOrigin.Scheme, gatewayUri.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(sourceOrigin.IdnHost, gatewayUri.IdnHost, StringComparison.OrdinalIgnoreCase) &&
+                   sourceOrigin.Port == gatewayUri.Port;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetUriOrigin(string? uriText, out Uri origin)
+    {
+        origin = null!;
+        if (!Uri.TryCreate(uriText, UriKind.Absolute, out var uri))
+            return false;
+
+        var builder = new UriBuilder(uri)
+        {
+            Path = string.Empty,
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+
+        origin = builder.Uri;
+        return true;
+    }
+
+    private static string SanitizeBridgeLogValue(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "";
+
+        Span<char> buffer = stackalloc char[Math.Min(value.Length, 80)];
+        var count = 0;
+        foreach (var ch in value)
+        {
+            if (count == buffer.Length)
+                break;
+            buffer[count++] = char.IsControl(ch) ? ' ' : ch;
+        }
+
+        var sanitized = new string(buffer[..count]);
+        return value.Length > count ? sanitized + "..." : sanitized;
+    }
+}

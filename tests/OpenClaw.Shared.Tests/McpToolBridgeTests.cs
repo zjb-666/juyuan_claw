@@ -1,0 +1,927 @@
+using System;
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using OpenClaw.Shared;
+using OpenClaw.Shared.Capabilities;
+using OpenClaw.Shared.Mcp;
+using OpenClaw.Shared.Telemetry;
+using Xunit;
+
+namespace OpenClaw.Shared.Tests;
+
+public class McpToolBridgeTests
+{
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan duration) => _utcNow += duration;
+    }
+
+    private sealed class FakeCapability : INodeCapability
+    {
+        public string Category { get; }
+        public IReadOnlyList<string> Commands { get; }
+        public Func<NodeInvokeRequest, Task<NodeInvokeResponse>>? OnExecute;
+        public Func<string, bool>? OnCanHandle;
+
+        public FakeCapability(string category, params string[] commands)
+        {
+            Category = category;
+            Commands = commands;
+        }
+
+        public bool CanHandle(string command) =>
+            OnCanHandle?.Invoke(command) ?? System.Linq.Enumerable.Contains(Commands, command);
+
+        public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request)
+            => OnExecute?.Invoke(request)
+               ?? Task.FromResult(new NodeInvokeResponse { Ok = true, Payload = new { echoed = request.Command } });
+    }
+
+    private sealed class CancellableCapability : INodeCapability
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _twoEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _enteredCount;
+
+        public string Category => "slow";
+        public IReadOnlyList<string> Commands => ["slow.wait"];
+        public Task Entered => _entered.Task;
+        public Task TwoEntered => _twoEntered.Task;
+        public int ExecuteCount => Volatile.Read(ref _enteredCount);
+        public bool CanHandle(string command) => command == "slow.wait";
+
+        public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request)
+            => ExecuteAsync(request, CancellationToken.None);
+
+        public async Task<NodeInvokeResponse> ExecuteAsync(
+            NodeInvokeRequest request,
+            CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            if (Interlocked.Increment(ref _enteredCount) == 2)
+            {
+                _twoEntered.TrySetResult();
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new NodeInvokeResponse { Ok = true };
+        }
+    }
+
+    private sealed class CancellationResultCapability : INodeCapability
+    {
+        public string Category => "slow";
+        public IReadOnlyList<string> Commands => ["slow.result"];
+        public bool CanHandle(string command) => command == "slow.result";
+
+        public Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request)
+            => ExecuteAsync(request, CancellationToken.None);
+
+        public Task<NodeInvokeResponse> ExecuteAsync(
+            NodeInvokeRequest request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new NodeInvokeResponse { Ok = false, Error = "cancelled" });
+    }
+
+    private static McpToolBridge CreateBridge(IReadOnlyList<INodeCapability> caps)
+        => new(() => caps);
+
+    private static McpToolBridge CreateBridge(
+        IReadOnlyList<INodeCapability> caps,
+        InvocationCancellationRegistry registry)
+        => new(() => caps, null, "test-mcp", "1.0.0", registry);
+
+    [Fact]
+    public async Task Initialize_ReturnsProtocolAndServerInfo()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""initialize""}");
+
+        Assert.NotNull(resp);
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("2024-11-05", result.GetProperty("protocolVersion").GetString());
+        Assert.True(result.TryGetProperty("capabilities", out _));
+        Assert.True(result.TryGetProperty("serverInfo", out _));
+    }
+
+    [Fact]
+    public async Task ToolsList_FlattensCommandsAcrossCapabilities()
+    {
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("alpha", "alpha.one", "alpha.two"),
+            new FakeCapability("beta", "beta.x"),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var tools = doc.RootElement.GetProperty("result").GetProperty("tools");
+        Assert.Equal(3, tools.GetArrayLength());
+        var names = new List<string>();
+        foreach (var t in tools.EnumerateArray())
+            names.Add(t.GetProperty("name").GetString()!);
+        Assert.Contains("alpha.one", names);
+        Assert.Contains("alpha.two", names);
+        Assert.Contains("beta.x", names);
+    }
+
+    [Fact]
+    public async Task ToolsList_KnownCommands_GetCuratedDescriptions()
+    {
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("system", "system.notify"),
+            new FakeCapability("canvas", "canvas.a2ui.push"),
+            new FakeCapability("screen", "screen.snapshot"),
+            new FakeCapability("camera", "camera.snap"),
+            new FakeCapability("tts", "tts.speak"),
+            new FakeCapability("custom", "custom.unknown"),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var byName = new Dictionary<string, string>();
+        foreach (var t in doc.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray())
+        {
+            byName[t.GetProperty("name").GetString()!] = t.GetProperty("description").GetString()!;
+        }
+
+        // Curated descriptions should be specific, not the generic "{category} capability: {cmd}" stub.
+        Assert.Contains("toast notification", byName["system.notify"]);
+        Assert.Contains("A2UI v0.8", byName["canvas.a2ui.push"]);
+        Assert.Contains("screenshot", byName["screen.snapshot"]);
+        Assert.Contains("camera", byName["camera.snap"], System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Speak text", byName["tts.speak"]);
+
+        // Unknown commands keep the generic fallback so newly-added capabilities still render.
+        Assert.Equal("custom capability: custom.unknown", byName["custom.unknown"]);
+    }
+
+    [Fact]
+    public async Task ToolsList_PicksUpNewCapabilityRegisteredAfterStart()
+    {
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("alpha", "alpha.one"),
+        };
+        var bridge = CreateBridge(caps);
+
+        // Simulate post-start registration — same pattern as RegisterCapability().
+        caps.Add(new FakeCapability("gamma", "gamma.new"));
+
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var tools = doc.RootElement.GetProperty("result").GetProperty("tools");
+        Assert.Equal(2, tools.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchesToCapability_AndReturnsTextContent()
+    {
+        var fake = new FakeCapability("alpha", "alpha.echo")
+        {
+            OnExecute = req => Task.FromResult(new NodeInvokeResponse
+            {
+                Ok = true,
+                Payload = new { hello = "world", n = 42 },
+            }),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":7,""method"":""tools/call"",""params"":{""name"":""alpha.echo"",""arguments"":{""x"":1}}}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.False(result.GetProperty("isError").GetBoolean());
+        var content = result.GetProperty("content");
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        var text = content[0].GetProperty("text").GetString()!;
+        // Payload is JSON-serialized as a string in the text content.
+        using var payload = JsonDocument.Parse(text);
+        Assert.Equal("world", payload.RootElement.GetProperty("hello").GetString());
+        Assert.Equal(42, payload.RootElement.GetProperty("n").GetInt32());
+    }
+
+    [Fact]
+    public async Task ToolsCall_UnknownTool_ReturnsToolErrorNotJsonRpcError()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""nope""}}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        // MCP convention: tool failures come back as result.isError=true,
+        // not JSON-RPC error. JSON-RPC errors are reserved for protocol issues.
+        Assert.True(doc.RootElement.TryGetProperty("result", out var result));
+        Assert.True(result.GetProperty("isError").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ToolsCall_CapabilityFailure_PropagatesAsToolError()
+    {
+        var fake = new FakeCapability("alpha", "alpha.fail")
+        {
+            OnExecute = _ => Task.FromResult(new NodeInvokeResponse { Ok = false, Error = "kaboom" }),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.fail""}}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+        Assert.Contains("kaboom", result.GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task ToolsCall_CapabilityFailure_EmitsTypedCompletion()
+    {
+        var fake = new FakeCapability("alpha", "alpha.fail")
+        {
+            OnExecute = _ => Task.FromResult(new NodeInvokeResponse
+            {
+                Ok = false,
+                Error = "private failure detail",
+                Diagnostic = new NodeToolDiagnostic(NodeToolErrorCategory.PermissionDenied),
+            }),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        NodeToolTelemetryCompletion? completion = null;
+        bridge.ToolTelemetryCompleted += (_, value) => completion = value;
+
+        await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.fail""}}");
+
+        Assert.NotNull(completion);
+        Assert.Equal("alpha.fail", completion!.Command);
+        Assert.Equal(NodeToolTransport.Mcp, completion.Transport);
+        Assert.Equal(NodeToolOutcome.Failure, completion.Outcome);
+        Assert.Equal(NodeToolErrorCategory.PermissionDenied, completion.ErrorCategory);
+        Assert.DoesNotContain("private", completion.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ToolsCall_CaseInsensitiveCapability_EmitsCanonicalCommandName()
+    {
+        var fake = new FakeCapability("alpha", "alpha.echo")
+        {
+            OnCanHandle = command => string.Equals(
+                command,
+                "alpha.echo",
+                StringComparison.OrdinalIgnoreCase),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        NodeToolTelemetryCompletion? completion = null;
+        bridge.ToolTelemetryCompleted += (_, value) => completion = value;
+
+        await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""ALPHA.ECHO""}}");
+
+        Assert.Equal("alpha.echo", completion!.Command);
+    }
+
+    [Fact]
+    public async Task ToolsCall_Notification_DefersCompletionUntilTransportDelivery()
+    {
+        var fake = new FakeCapability("alpha", "alpha.echo");
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        var completions = new List<NodeToolTelemetryCompletion>();
+        bridge.ToolTelemetryCompleted += (_, value) => completions.Add(value);
+
+        var response = await bridge.HandleTransportRequestAsync(
+            @"{""jsonrpc"":""2.0"",""method"":""tools/call"",""params"":{""name"":""alpha.echo""}}",
+            CancellationToken.None);
+
+        Assert.Null(response.Body);
+        Assert.Empty(completions);
+
+        response.CompleteDelivery(typeof(IOException));
+        response.CompleteDelivery();
+
+        var completion = Assert.Single(completions);
+        Assert.Equal(NodeToolOutcome.Failure, completion.Outcome);
+        Assert.Equal(NodeToolErrorCategory.TransportFailure, completion.ErrorCategory);
+        Assert.Equal(typeof(IOException).FullName, completion.ErrorType);
+    }
+
+    [Fact]
+    public async Task ToolsCall_SemanticCommandFailure_PreservesMcpWireSuccess()
+    {
+        var fake = new FakeCapability("system", "system.run")
+        {
+            OnExecute = _ => Task.FromResult(new NodeInvokeResponse
+            {
+                Ok = true,
+                Payload = new { success = false, exitCode = 42, timedOut = false },
+                Diagnostic = new NodeToolDiagnostic(
+                    NodeToolErrorCategory.CommandFailed,
+                    NodeToolExecutionMode.Sandbox),
+            }),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        NodeToolTelemetryCompletion? completion = null;
+        bridge.ToolTelemetryCompleted += (_, value) => completion = value;
+
+        var response = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""system.run""}}");
+
+        using var document = JsonDocument.Parse(response!);
+        var result = document.RootElement.GetProperty("result");
+        Assert.False(result.GetProperty("isError").GetBoolean());
+        using var payload = JsonDocument.Parse(result.GetProperty("content")[0].GetProperty("text").GetString()!);
+        Assert.False(payload.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(42, payload.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal(NodeToolErrorCategory.CommandFailed, completion!.ErrorCategory);
+        Assert.Equal(NodeToolExecutionMode.Sandbox, completion.ExecutionMode);
+    }
+
+    [Fact]
+    public async Task CancellationNotification_CancelsMatchingToolsCall()
+    {
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability]);
+        var completionSource = new TaskCompletionSource<NodeToolTelemetryCompletion>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        bridge.ToolTelemetryCompleted += (_, completion) =>
+            completionSource.TrySetResult(completion);
+        var callTask = bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":"slow-1","method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""");
+        await capability.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var notificationResponse = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow-1","reason":"test"}}""");
+        Assert.Null(notificationResponse);
+
+        var response = await callTask.WaitAsync(TimeSpan.FromSeconds(5));
+        using var doc = JsonDocument.Parse(response!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+        Assert.Equal("cancelled", result.GetProperty("content")[0].GetProperty("text").GetString());
+        var completion = await completionSource.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(NodeToolOutcome.Canceled, completion.Outcome);
+        Assert.Equal(NodeToolErrorCategory.Other, completion.ErrorCategory);
+    }
+
+    [Fact]
+    public async Task CancellationNotification_UnknownRequest_IsHarmless()
+    {
+        var bridge = CreateBridge([]);
+
+        var response = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}""");
+
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public async Task CancellationNotification_TransportCancellation_IsNotLoggedAsError()
+    {
+        var logger = new TestLogger();
+        var bridge = new McpToolBridge(() => [], logger);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}""",
+            cts.Token);
+
+        Assert.Null(response);
+        Assert.DoesNotContain(logger.Logs, entry => entry.StartsWith("ERROR:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CancellationNotification_BeforeRegistrationCancelsToolsCall()
+    {
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+        var registry = new InvocationCancellationRegistry(
+            allowDuplicateIds: true,
+            pendingCancellationTtl: TimeSpan.FromSeconds(5),
+            timeProvider: timeProvider);
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability], registry);
+
+        var notificationResponse = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"pre-cancelled"}}""");
+        Assert.Null(notificationResponse);
+        Assert.Equal(1, registry.PendingCancellationCount);
+        timeProvider.Advance(TimeSpan.FromSeconds(1));
+
+        var response = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":"pre-cancelled","method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""");
+        using var doc = JsonDocument.Parse(response!);
+        Assert.Equal(
+            "cancelled",
+            doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+        Assert.Equal(0, capability.ExecuteCount);
+    }
+
+    [Fact]
+    public async Task PendingCancellation_IsReportedWhenTransportIsAlreadyCancelled()
+    {
+        var registry = new InvocationCancellationRegistry(
+            allowDuplicateIds: true,
+            pendingCancellationTtl: TimeSpan.FromSeconds(5));
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability], registry);
+        using var transportCts = new CancellationTokenSource();
+
+        await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"pre-cancelled"}}""");
+        transportCts.Cancel();
+
+        var response = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":"pre-cancelled","method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""",
+            transportCts.Token);
+        using var doc = JsonDocument.Parse(response!);
+        Assert.Equal(
+            "cancelled",
+            doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+        Assert.Equal(0, capability.ExecuteCount);
+    }
+
+    [Fact]
+    public async Task CancellationNotification_DuplicateActiveIds_AreNotCrossCancelled()
+    {
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability]);
+        using var transportCts = new CancellationTokenSource();
+        const string request =
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""";
+
+        var firstCall = bridge.HandleRequestAsync(request, transportCts.Token);
+        var secondCall = bridge.HandleRequestAsync(request, transportCts.Token);
+        await capability.TwoEntered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var notificationResponse = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}""");
+        Assert.Null(notificationResponse);
+        Assert.False(firstCall.IsCompleted);
+        Assert.False(secondCall.IsCompleted);
+
+        transportCts.Cancel();
+        await Task.WhenAll(firstCall, secondCall).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task CancellationNotification_PreservesNumericAndStringRequestIdIdentity()
+    {
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability]);
+        var callTask = bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""");
+        await capability.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"42"}}""");
+        Assert.False(callTask.IsCompleted);
+
+        await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}""");
+        var response = await callTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var doc = JsonDocument.Parse(response!);
+        Assert.Equal(
+            "cancelled",
+            doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task CancellationNotification_MatchesEquivalentEscapedStringRequestId()
+    {
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability]);
+        var callTask = bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":"request","method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""");
+        await capability.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"\u0072equest"}}""");
+        var response = await callTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var doc = JsonDocument.Parse(response!);
+        Assert.Equal(
+            "cancelled",
+            doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task CancellationNotification_MatchesEquivalentNumericRequestId()
+    {
+        var capability = new CancellableCapability();
+        var bridge = CreateBridge([capability]);
+        var callTask = bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":1.0e2,"method":"tools/call","params":{"name":"slow.wait","arguments":{}}}""");
+        await capability.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":100}}""");
+        var response = await callTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var doc = JsonDocument.Parse(response!);
+        Assert.Equal(
+            "cancelled",
+            doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task UnknownMethod_ReturnsJsonRpcMethodNotFound()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""nonsense""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        Assert.Equal(-32601, doc.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task Notification_ReturnsNullResponseBody()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        // No "id" → JSON-RPC notification → no response.
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""method"":""notifications/initialized""}");
+        Assert.Null(resp);
+    }
+
+    [Fact]
+    public async Task GarbageInput_ReturnsParseError()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync("not json");
+        using var doc = JsonDocument.Parse(resp!);
+        Assert.Equal(-32700, doc.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task NonObjectRoot_ReturnsInvalidRequest()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync("[1,2,3]");
+        using var doc = JsonDocument.Parse(resp!);
+        Assert.Equal(-32600, doc.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task ToolsCall_MissingParams_ReturnsToolError()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ToolsCall_NameNotString_ReturnsToolError()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":42}}");
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ToolsCall_ArgumentsNotObject_ReturnsToolError()
+    {
+        var fake = new FakeCapability("alpha", "alpha.echo");
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.echo"",""arguments"":[1,2,3]}}");
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+    }
+
+    [Fact]
+    public async Task NumericId_RoundtripsRawValue()
+    {
+        // Non-integer numeric id used to throw on GetInt64; verify it's preserved.
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1.5,""method"":""ping""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var id = doc.RootElement.GetProperty("id");
+        Assert.Equal(JsonValueKind.Number, id.ValueKind);
+        Assert.Equal(1.5, id.GetDouble());
+    }
+
+    [Fact]
+    public async Task LargeNumericId_RoundtripsRawValue()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":99999999999999999999,""method"":""ping""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var id = doc.RootElement.GetProperty("id");
+        Assert.Equal(JsonValueKind.Number, id.ValueKind);
+        Assert.Equal("99999999999999999999", id.GetRawText());
+    }
+
+    [Fact]
+    public async Task StringId_Roundtrips()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":""abc-123"",""method"":""ping""}");
+        using var doc = JsonDocument.Parse(resp!);
+        Assert.Equal("abc-123", doc.RootElement.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task ResourcesList_ReturnsEmptyForCompat()
+    {
+        // Cursor probes resources/list at startup; we want compat, not MethodNotFound.
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""resources/list""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var resources = doc.RootElement.GetProperty("result").GetProperty("resources");
+        Assert.Equal(0, resources.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task PromptsList_ReturnsEmptyForCompat()
+    {
+        var bridge = CreateBridge(new List<INodeCapability>());
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""prompts/list""}");
+        using var doc = JsonDocument.Parse(resp!);
+        var prompts = doc.RootElement.GetProperty("result").GetProperty("prompts");
+        Assert.Equal(0, prompts.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ToolsCall_LongRunning_CancellationReturnsTimeoutToolError()
+    {
+        // CR-003: a tool that wedges past the request deadline must surface as
+        // a tool error instead of pinning the handler. The bridge gives up
+        // waiting once the CT fires; the underlying Task continues but is no
+        // longer the caller's problem.
+        var tcs = new TaskCompletionSource<NodeInvokeResponse>();
+        var fake = new FakeCapability("alpha", "alpha.slow")
+        {
+            OnExecute = _ => tcs.Task,
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+        NodeToolTelemetryCompletion? completion = null;
+        bridge.ToolTelemetryCompleted += (_, value) => completion = value;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.slow""}}",
+            cts.Token);
+
+        // Unblock the dangling task so xunit doesn't complain about leaked work.
+        tcs.TrySetResult(new NodeInvokeResponse { Ok = true });
+
+        using var doc = JsonDocument.Parse(resp!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+        Assert.Contains("timed out", result.GetProperty("content")[0].GetProperty("text").GetString());
+        Assert.Equal(NodeToolOutcome.Canceled, completion!.Outcome);
+        Assert.Equal(NodeToolErrorCategory.Timeout, completion.ErrorCategory);
+    }
+
+    [Fact]
+    public async Task ToolsCall_TransportCancellationOverridesCapabilityCancelledResult()
+    {
+        var bridge = CreateBridge([new CancellationResultCapability()]);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await bridge.HandleRequestAsync(
+            """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow.result"}}""",
+            cts.Token);
+
+        using var doc = JsonDocument.Parse(response!);
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+        Assert.Equal(
+            "request timed out",
+            result.GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task UnhandledException_ReturnsGenericInternalError_NotLeakingMessage()
+    {
+        var fake = new FakeCapability("alpha", "alpha.boom")
+        {
+            OnExecute = _ => throw new InvalidOperationException("secret-internal-detail"),
+        };
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.boom""}}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var error = doc.RootElement.GetProperty("error");
+        Assert.Equal(-32603, error.GetProperty("code").GetInt32());
+        Assert.DoesNotContain("secret-internal-detail", error.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task ToolsList_SttTranscribe_HasCuratedDescription()
+    {
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("stt", "stt.transcribe"),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var description = doc.RootElement.GetProperty("result")
+            .GetProperty("tools")[0]
+            .GetProperty("description")
+            .GetString()!;
+
+        // Must mention the key surface area so MCP clients render something useful.
+        Assert.Contains("microphone", description, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("maxDurationMs", description);
+        Assert.Contains("text", description, System.StringComparison.OrdinalIgnoreCase);
+        // And explicitly NOT the generic stub.
+        Assert.DoesNotContain("stt capability:", description);
+    }
+
+    [Fact]
+    public async Task ToolsList_SttListen_HasCuratedDescription()
+    {
+        var caps = new List<INodeCapability> { new FakeCapability("stt", "stt.listen") };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var description = doc.RootElement.GetProperty("result")
+            .GetProperty("tools")[0]
+            .GetProperty("description")
+            .GetString()!;
+
+        Assert.Contains("voice-activity detection", description, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("timeoutMs", description);
+        // Privacy: must mention NodeSttEnabled gate so MCP clients
+        // know this is opt-in.
+        Assert.Contains("NodeSttEnabled", description);
+        // Engine surface must be advertised so callers can read engineEffective.
+        Assert.Contains("engineEffective", description);
+        Assert.DoesNotContain("stt capability:", description);
+    }
+
+    [Fact]
+    public async Task ToolsList_SttStatus_HasCuratedDescription()
+    {
+        var caps = new List<INodeCapability> { new FakeCapability("stt", "stt.status") };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var description = doc.RootElement.GetProperty("result")
+            .GetProperty("tools")[0]
+            .GetProperty("description")
+            .GetString()!;
+
+        Assert.Contains("readiness", description, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("engine", description, System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("whisper", description, System.StringComparison.OrdinalIgnoreCase);
+        // Privacy invariant in the description itself: no PII.
+        Assert.Contains("no PII", description, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ToolsList_AllStt_AppearWhenSttCapabilityRegistered()
+    {
+        // Single SttCapability instance advertises all three commands.
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("stt", "stt.transcribe", "stt.listen", "stt.status"),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var toolNames = new HashSet<string>();
+        foreach (var t in doc.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray())
+            toolNames.Add(t.GetProperty("name").GetString()!);
+
+        Assert.Contains("stt.transcribe", toolNames);
+        Assert.Contains("stt.listen", toolNames);
+        Assert.Contains("stt.status", toolNames);
+    }
+
+    [Fact]
+    public async Task ToolsList_AllStt_Absent_WhenSttCapabilityNotRegistered()
+    {
+        // STT capability is gated by NodeSttEnabled in NodeService;
+        // when disabled, no SttCapability is constructed and tools/list
+        // must omit the three stt.* tools.
+        var caps = new List<INodeCapability>
+        {
+            new FakeCapability("device", "device.status"),
+            new FakeCapability("tts", "tts.speak"),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var toolNames = new HashSet<string>();
+        foreach (var t in doc.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray())
+            toolNames.Add(t.GetProperty("name").GetString()!);
+
+        Assert.DoesNotContain("stt.transcribe", toolNames);
+        Assert.DoesNotContain("stt.listen", toolNames);
+        Assert.DoesNotContain("stt.status", toolNames);
+    }
+
+    [Fact]
+    public async Task ToolsList_SystemRun_Present_WhenSystemCapabilityIncludesRunCommands()
+    {
+        // Default SystemCapability (includeRunCommands: true) — the
+        // "Run system tools" toggle is on. tools/list advertises both
+        // system.run and system.run.prepare.
+        var caps = new List<INodeCapability>
+        {
+            new SystemCapability(OpenClaw.Shared.NullLogger.Instance),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var toolNames = new HashSet<string>();
+        foreach (var t in doc.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray())
+            toolNames.Add(t.GetProperty("name").GetString()!);
+
+        Assert.Contains("system.run", toolNames);
+        Assert.Contains("system.run.prepare", toolNames);
+        // The rest of the system category is always present.
+        Assert.Contains("system.notify", toolNames);
+        Assert.Contains("system.which", toolNames);
+    }
+
+    [Fact]
+    public async Task ToolsList_SystemRun_Absent_WhenSystemCapabilityExcludesRunCommands()
+    {
+        // "Run system tools" toggle off: NodeService constructs
+        // SystemCapability(includeRunCommands: false). The MCP tools/list
+        // must drop the two run commands but keep the rest of the system
+        // category (notify/which/execApprovals).
+        var caps = new List<INodeCapability>
+        {
+            new SystemCapability(OpenClaw.Shared.NullLogger.Instance, includeRunCommands: false),
+        };
+        var bridge = CreateBridge(caps);
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/list""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var toolNames = new HashSet<string>();
+        foreach (var t in doc.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray())
+            toolNames.Add(t.GetProperty("name").GetString()!);
+
+        Assert.DoesNotContain("system.run", toolNames);
+        Assert.DoesNotContain("system.run.prepare", toolNames);
+        Assert.Contains("system.notify", toolNames);
+        Assert.Contains("system.which", toolNames);
+        Assert.Contains("system.execApprovals.get", toolNames);
+        Assert.Contains("system.execApprovals.set", toolNames);
+    }
+
+    [Fact]
+    public async Task Initialize_ReturnsCustomServerNameAndVersion()
+    {
+        var bridge = new McpToolBridge(
+            () => new List<INodeCapability>(),
+            serverName: "my-mcp-server",
+            serverVersion: "1.2.3");
+
+        var resp = await bridge.HandleRequestAsync(@"{""jsonrpc"":""2.0"",""id"":1,""method"":""initialize""}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        var serverInfo = doc.RootElement.GetProperty("result").GetProperty("serverInfo");
+        Assert.Equal("my-mcp-server", serverInfo.GetProperty("name").GetString());
+        Assert.Equal("1.2.3", serverInfo.GetProperty("version").GetString());
+    }
+
+    [Fact]
+    public async Task ToolsCall_NullArguments_IsAccepted()
+    {
+        var fake = new FakeCapability("alpha", "alpha.echo");
+        var bridge = CreateBridge(new List<INodeCapability> { fake });
+
+        var resp = await bridge.HandleRequestAsync(
+            @"{""jsonrpc"":""2.0"",""id"":1,""method"":""tools/call"",""params"":{""name"":""alpha.echo"",""arguments"":null}}");
+
+        using var doc = JsonDocument.Parse(resp!);
+        Assert.True(doc.RootElement.TryGetProperty("result", out var result));
+        Assert.False(result.GetProperty("isError").GetBoolean());
+    }
+}
