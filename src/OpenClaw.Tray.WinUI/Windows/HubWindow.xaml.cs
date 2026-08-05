@@ -155,30 +155,22 @@ public sealed partial class HubWindow : WindowEx
     }
 
     /// <summary>
-    /// Platform billing lock: hide operator-only Gateway surfaces so end users
-    /// cannot enter vendor API keys or inspect backend host inventory.
+    /// Platform billing lock: hide raw Gateway Config so users cannot enter
+    /// vendor API keys or bypass the juyuancloud allowlist.
     /// </summary>
     public void RefreshProductBillingNavVisibility()
     {
-        var hideOperatorSurfaces = ProductBillingGate.IsLocked;
+        var hideConfig = ProductBillingGate.IsLocked;
         if (NavConfig != null)
-            NavConfig.Visibility = hideOperatorSurfaces ? Visibility.Collapsed : Visibility.Visible;
-        if (NavInstances != null && hideOperatorSurfaces)
-            NavInstances.Visibility = Visibility.Collapsed;
-        if (!hideOperatorSurfaces)
+            NavConfig.Visibility = hideConfig ? Visibility.Collapsed : Visibility.Visible;
+        if (!hideConfig)
             return;
 
         RemoveBackStackEntries("config");
-        RemoveBackStackEntries("instances");
-        RemoveBackStackEntries("nodes");
-        if (string.Equals(_currentNavTag, "config", StringComparison.Ordinal) ||
-            string.Equals(_currentNavTag, "instances", StringComparison.Ordinal) ||
-            string.Equals(_currentNavTag, "nodes", StringComparison.Ordinal))
+        if (string.Equals(_currentNavTag, "config", StringComparison.Ordinal))
         {
             NavigateInternal("settings");
             RemoveBackStackEntries("config");
-            RemoveBackStackEntries("instances");
-            RemoveBackStackEntries("nodes");
             UpdateBackButton();
         }
         else
@@ -607,32 +599,14 @@ public sealed partial class HubWindow : WindowEx
         }
     }
 
-    private double _lastOpenPaneLength = double.NaN;
-
     private void OnRootGridSizeChanged(object sender, SizeChangedEventArgs e)
     {
         const double minPane = 200;
         const double maxPane = 260;
         const double ratio = 0.25;
 
-        if (e.NewSize.Width <= 0 || NavView is null)
-            return;
-
-        // Chat mounts a tall Reactor tree; resizing the nav pane from SizeChanged
-        // re-enters measure and has triggered LayoutCycleException on Chat nav.
-        if (string.Equals(_currentNavTag, "chat", StringComparison.Ordinal))
-            return;
-
-        // Only assign when the value actually changes. Unconditionally writing
-        // OpenPaneLength from SizeChanged can re-enter measure and trip
-        // LayoutCycleException (seen freezing the product Hub within a minute).
-        double desired = Math.Clamp(e.NewSize.Width * ratio, minPane, maxPane);
-        if (!double.IsNaN(_lastOpenPaneLength) && Math.Abs(desired - _lastOpenPaneLength) < 0.5)
-            return;
-
-        _lastOpenPaneLength = desired;
-        if (Math.Abs(NavView.OpenPaneLength - desired) >= 0.5)
-            NavView.OpenPaneLength = desired;
+        double desired = e.NewSize.Width * ratio;
+        NavView.OpenPaneLength = Math.Clamp(desired, minPane, maxPane);
     }
 
     private void OnHubWindowActivated(object sender, WindowActivatedEventArgs args)
@@ -640,7 +614,13 @@ public sealed partial class HubWindow : WindowEx
         if (args.WindowActivationState == WindowActivationState.Deactivated)
             return;
 
-        // After idle/minimize, content must stay hittable (no clip dependency).
+        // After idle/minimize, force a clip refresh so content stays hittable.
+        if (NavContentHost.ActualWidth > 0 && NavContentHost.ActualHeight > 0)
+        {
+            NavContentClip.Rect = new global::Windows.Foundation.Rect(
+                0, 0, NavContentHost.ActualWidth, NavContentHost.ActualHeight);
+        }
+
         _ = RefreshComputeBalanceAsync();
     }
 
@@ -735,11 +715,23 @@ public sealed partial class HubWindow : WindowEx
 
         ComputeBalancePill.Visibility = Visibility.Visible;
         ComputeBalanceText.Text = ProductComputeBalanceClient.FormatDisplay(balance);
+        var unit = string.IsNullOrWhiteSpace(balance.Unit) ? "RH" : balance.Unit.Trim();
+        var formatted = ProductComputeBalanceClient.FormatOneDecimalNoRound(balance.Balance);
         ToolTipService.SetToolTip(
             ComputeBalancePill,
             balance.Balance <= 0
                 ? "算力余额不足，请前往聚元云平台充值"
-                : $"剩余算力 {balance.Balance} {balance.Unit}（与网页钱包同源）");
+                : $"剩余算力 {formatted} {unit}（与网页钱包同源）");
+    }
+
+    private void OnNavContentHostSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // Zero-size updates happen during minimize/hide. Keeping a 0×0 clip makes
+        // the whole hub content unhittable after restore until another layout pass.
+        if (e.NewSize.Width <= 0 || e.NewSize.Height <= 0)
+            return;
+
+        NavContentClip.Rect = new global::Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height);
     }
 
     private void OnNavPaneToggleButtonClick(object sender, RoutedEventArgs e)
@@ -852,8 +844,6 @@ public sealed partial class HubWindow : WindowEx
             tag = "settings";
         if (tag == "config" && ProductBillingGate.IsLocked)
             tag = "settings";
-        if ((tag == "instances" || tag == "nodes") && ProductBillingGate.IsLocked)
-            tag = "connection";
 
         var pageType = TagToPageType(tag);
         if (pageType == null) return;
@@ -1065,8 +1055,7 @@ public sealed partial class HubWindow : WindowEx
             NavSessions.Visibility = vis;
             NavSkills.Visibility = vis;
             NavChannels.Visibility = vis;
-            // Product builds hide host inventory; do not re-show it on connect.
-            NavInstances.Visibility = ProductBillingGate.IsLocked ? Visibility.Collapsed : vis;
+            NavInstances.Visibility = vis;
             NavCron.Visibility = vis;
             NavAdvanced.Visibility = keepCurrentGatewayPageVisible ? Visibility.Visible : vis;
             NavGatewaySeparator.Visibility = vis;
@@ -1475,6 +1464,7 @@ public sealed partial class HubWindow : WindowEx
             new() { Icon = "🧠", Title = LocalizationHelper.Format("Command_GoToCron_Title", agentId), Subtitle = LocalizationHelper.GetString("Command_GoToCron_Subtitle"), Tag = $"agent:{agentId}:cron" },
             new() { Icon = "🧠", Title = LocalizationHelper.Format("Command_GoToWorkspace_Title", agentId), Subtitle = LocalizationHelper.GetString("Command_GoToWorkspace_Subtitle"), Tag = $"agent:{agentId}" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToChannels_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToChannels_Subtitle"), Tag = "channels" },
+            new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToInstances_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToInstances_Subtitle"), Tag = "instances" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToUsage_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToUsage_Subtitle"), Tag = "usage" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToBindings_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToBindings_Subtitle"), Tag = "bindings" },
             new() { Icon = "🛡️", Title = LocalizationHelper.GetString("Command_GoToPermissions_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToPermissions_Subtitle"), Tag = "permissions" },
@@ -1488,7 +1478,6 @@ public sealed partial class HubWindow : WindowEx
 
         if (!ProductBillingGate.IsLocked)
         {
-            commands.Insert(8, new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToInstances_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToInstances_Subtitle"), Tag = "instances" });
             var configCommand = new CommandItem
             {
                 Icon = "📡",

@@ -44,16 +44,14 @@ namespace OpenClawTray;
 
 public partial class App : Application, OpenClawTray.Services.IAppCommands
 {
-    // Keep as runtime-readable (not const) so the gated update paths stay compilable
-    // while product auto-update remains intentionally disabled.
-    private static readonly bool ProductUpdatesEnabled = false;
+    private const bool ProductUpdatesEnabled = false;
 
     // Product builds must never consume upstream Companion releases because they omit
     // the platform authorization gate. Enable only after a signed product update feed exists.
     internal static readonly UpdatumManager AppUpdater = new("disabled", "disabled")
     {
         FetchOnlyLatestRelease = true,
-        InstallUpdateSingleFileExecutableName = "JuyuanLingchuang",
+        InstallUpdateSingleFileExecutableName = "OpenClaw.Tray.WinUI",
     };
 
     private TrayIcon? _trayIcon;
@@ -382,8 +380,6 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
     {
         _crashLogger.Log("UnhandledException", e.Exception);
         e.Handled = true; // Try to prevent crash
-        // Do not Exit() on LayoutCycleException: product login/chat can hit a transient
-        // layout cycle while still usable; forcing quit made the app "exit right after login".
     }
 
     /// <summary>
@@ -819,9 +815,6 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         // Only expose the product shell after platform authorization succeeds.
         InitializeTrayIcon();
-        // Open Hub immediately so the user is not left with only a tray icon
-        // (left-click previously opened quick-chat and blanked the shell).
-        ShowHub("connection");
         ShowSurfaceImprovementsTipIfNeeded();
         InitializeServiceProvider();
 
@@ -929,16 +922,14 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         InitializeGatewayClient();
 
-        // Product builds skip chat pre-warm. Creating ChatWindow at startup still
-        // raced Reactor history load and left a blank Hub after UI exceptions.
-        if (!ProductBillingGate.IsLocked &&
-            _settings != null &&
+        // Pre-warm chat window (WebView2 init takes 1-3s, do it now so left-click is instant)
+        if (_settings != null &&
             TryResolveChatCredentials(out var prewarmUrl, out var prewarmToken, out _, out var prewarmIsBootstrapToken) &&
             !prewarmIsBootstrapToken)
         {
             _chatWindow = new ChatWindow(prewarmUrl, prewarmToken);
             ApplyThemePreference(_chatWindow);
-            _chatWindow.HideNearTray();
+            // Window is created but hidden — WebView2 initializes in the background
         }
 
         // Start deep link server
@@ -1063,14 +1054,6 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
     private void OnTrayIconSelected(TrayIcon sender, TrayIconEventArgs e)
     {
-        // Product builds: open the Hub Connection page. Quick-chat mounts Reactor
-        // + full gateway history and has been blanking Hub after InvalidCast.
-        if (ProductBillingGate.IsLocked)
-        {
-            ShowHub("connection");
-            return;
-        }
-
         if (_connectionManager?.CurrentSnapshot.OperatorState == RoleConnectionState.Connected)
         {
             ShowChatWindow();

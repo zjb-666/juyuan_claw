@@ -90,6 +90,7 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
     private bool _agentFilesListUnsupported;
     private bool _agentFileGetUnsupported;
     private bool _operatorReadScopeUnavailable;
+    private bool _operatorAdminScopeUnavailable;
     private bool _pairingRequiredAwaitingApproval;
     private string? _pairingRequiredRequestId;
     private bool _authFailed;
@@ -139,6 +140,7 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
         _agentFilesListUnsupported = false;
         _agentFileGetUnsupported = false;
         _operatorReadScopeUnavailable = false;
+        _operatorAdminScopeUnavailable = false;
     }
 
     /// <summary>
@@ -782,6 +784,7 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
     public Task<bool> PatchSessionAsync(string key, string? model = null, string? thinkingLevel = null, string? verboseLevel = null)
     {
         if (string.IsNullOrWhiteSpace(key)) return Task.FromResult(false);
+        if (_operatorAdminScopeUnavailable) return Task.FromResult(false);
 
         var payload = new Dictionary<string, object?>
         {
@@ -799,18 +802,21 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
     public Task<bool> ResetSessionAsync(string key)
     {
         if (string.IsNullOrWhiteSpace(key)) return Task.FromResult(false);
+        if (_operatorAdminScopeUnavailable) return Task.FromResult(false);
         return TrySendTrackedRequestAsync("sessions.reset", new { key });
     }
 
     public Task<bool> DeleteSessionAsync(string key, bool deleteTranscript = true)
     {
         if (string.IsNullOrWhiteSpace(key)) return Task.FromResult(false);
+        if (_operatorAdminScopeUnavailable) return Task.FromResult(false);
         return TrySendTrackedRequestAsync("sessions.delete", new { key, deleteTranscript });
     }
 
     public Task<bool> CompactSessionAsync(string key, int maxLines = 400)
     {
         if (string.IsNullOrWhiteSpace(key)) return Task.FromResult(false);
+        if (_operatorAdminScopeUnavailable) return Task.FromResult(false);
         if (maxLines <= 0) maxLines = 400;
         return TrySendTrackedRequestAsync("sessions.compact", new { key, maxLines });
     }
@@ -1889,6 +1895,15 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
             ResetReconnectAttempts();
             _operatorDeviceId = TryGetHandshakeDeviceId(payload);
             _grantedOperatorScopes = TryGetHandshakeScopes(payload);
+            if (_grantedOperatorScopes.Length > 0)
+            {
+                // If the gateway granted scopes does not include operator.admin, sessions.patch
+                // (and siblings) will always fail. Disable follow-up session mutations early to
+                // avoid cascading chat.send failures on fresh sessions.
+                _operatorAdminScopeUnavailable = !_grantedOperatorScopes.Contains(
+                    "operator.admin",
+                    StringComparer.OrdinalIgnoreCase);
+            }
             // Write the key first, then publish the readiness flag. Pair with
             // Volatile.Read on the public getters so a reader observing
             // HasHandshakeSnapshot==true is guaranteed to see the populated
@@ -2268,6 +2283,19 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
             return;
         }
 
+        if (IsMissingScopeError(message, "operator.admin") &&
+            IsSessionCommandMethod(method))
+        {
+            if (!_operatorAdminScopeUnavailable)
+            {
+                _logger.Warn(
+                    "Gateway token lacks operator.admin; disabling sessions.patch/reset/delete/compact");
+            }
+
+            _operatorAdminScopeUnavailable = true;
+            return;
+        }
+
         if (IsUnknownMethodError(message))
         {
             switch (method)
@@ -2501,8 +2529,12 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
         if (string.IsNullOrWhiteSpace(errorMessage) || string.IsNullOrWhiteSpace(scope))
             return false;
 
-        var expected = $"missing scope: {scope}";
-        return errorMessage.Contains(expected, StringComparison.OrdinalIgnoreCase);
+        // Gateways aren't fully consistent in their error text formatting.
+        // Accept the canonical variants so the caller can reliably disable
+        // follow-up operations that would repeatedly fail.
+        return errorMessage.Contains($"missing scope: {scope}", StringComparison.OrdinalIgnoreCase) ||
+               errorMessage.Contains($"missing scope {scope}", StringComparison.OrdinalIgnoreCase) ||
+               errorMessage.Contains($"insufficient scope {scope}", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSessionCommandMethod(string method)

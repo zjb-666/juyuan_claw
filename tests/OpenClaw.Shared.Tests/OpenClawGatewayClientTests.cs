@@ -470,6 +470,9 @@ public class OpenClawGatewayClientTests
         public bool GetOperatorReadScopeUnavailable() =>
             GetPrivateField<bool>("_operatorReadScopeUnavailable");
 
+        public bool GetOperatorAdminScopeUnavailable() =>
+            GetPrivateField<bool>("_operatorAdminScopeUnavailable");
+
         public List<ConnectionStatus> CaptureStatusChanges()
         {
             var changes = new List<ConnectionStatus>();
@@ -3595,6 +3598,29 @@ public class OpenClawGatewayClientTests
         """);
 
         Assert.True(helper.GetOperatorReadScopeUnavailable());
+    }
+
+    [Theory]
+    [InlineData("sessions.patch")]
+    [InlineData("sessions.reset")]
+    [InlineData("sessions.delete")]
+    [InlineData("sessions.compact")]
+    public void HandleRequestError_MissingOperatorAdminScope_SetsUnavailableFlag(string method)
+    {
+        var helper = new GatewayClientTestHelper();
+        var reqId = $"req-scope-{method}";
+        helper.TrackPendingRequest(reqId, method);
+
+        helper.ProcessRawMessage($$"""
+        {
+            "type": "res",
+            "id": "{{reqId}}",
+            "ok": false,
+            "error": "missing scope: operator.admin"
+        }
+        """);
+
+        Assert.True(helper.GetOperatorAdminScopeUnavailable());
     }
 
     // --- HandleRequestError: unknown method fallbacks ---

@@ -2327,83 +2327,6 @@ public class OpenClawChatDataProviderTests
     }
 
     [Fact]
-    public async Task ChatMessageReceived_SameTextStreamingStubAfterLifecycleEnd_DoesNotDuplicateAssistant()
-    {
-        var (bridge, provider, _, _) = CreateProvider(new[] { MainSession() });
-        await provider.LoadAsync();
-
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"start"}""", runId: "run-1"));
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "assistant",
-            Text = "抱歉，刚才那次回复被中断了。",
-            State = "delta"
-        });
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-1"));
-
-        // Gateway re-runs the same stub as a non-final frame (and often starts a
-        // second lifecycle). Same text must not create a second bubble.
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"start"}""", runId: "run-2"));
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "assistant",
-            Text = "抱歉，刚才那次回复被中断了。",
-            State = "delta"
-        });
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-2"));
-
-        var timeline = (await provider.LoadAsync()).Timelines["main"];
-        var assistants = timeline.Entries.Where(e => e.Kind == ChatTimelineItemKind.Assistant).ToList();
-        Assert.Single(assistants);
-        Assert.Equal("抱歉，刚才那次回复被中断了。", assistants[0].Text);
-    }
-
-    [Fact]
-    public async Task ChatMessageReceived_SameAssistantTextAcrossDuplicateUserEcho_DoesNotDuplicateAssistant()
-    {
-        var (bridge, provider, _, _) = CreateProvider(new[] { MainSession() });
-        await provider.LoadAsync();
-
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "user",
-            Text = "hello",
-            State = "final"
-        });
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "assistant",
-            Text = "same stub",
-            State = "delta"
-        });
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-1"));
-
-        // Second agent turn re-emits the same user echo before the same assistant.
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "user",
-            Text = "hello",
-            State = "final"
-        });
-        bridge.RaiseChat(new ChatMessageInfo
-        {
-            SessionKey = "main",
-            Role = "assistant",
-            Text = "same stub",
-            State = "delta"
-        });
-
-        var timeline = (await provider.LoadAsync()).Timelines["main"];
-        Assert.Single(timeline.Entries, e => e.Kind == ChatTimelineItemKind.Assistant);
-        Assert.Equal(2, timeline.Entries.Count(e => e.Kind == ChatTimelineItemKind.User));
-    }
-
-    [Fact]
     public async Task ChatMessageReceived_DeltaAfterFinalAssistant_DoesNotReactivateTurn()
     {
         var (bridge, provider, _, notifications) = CreateProvider(new[] { MainSession() });
@@ -2902,10 +2825,6 @@ public class OpenClawChatDataProviderTests
             e => e.Kind == ChatTimelineItemKind.User);
         Assert.False(provider.GetEntryMetadata("main")[before.Id].IsLocalQueuedSend);
         Assert.NotNull(provider.GetEntryMetadata("main")[before.Id].LocalQueuedMessageId);
-
-        // Finish the live run before history reload. LoadHistory preserves
-        // TurnActive while _activeRunIds still owns the thread.
-        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-fresh"));
 
         bridge.HistoryBehavior = _ => Task.FromResult(new ChatHistoryInfo
         {

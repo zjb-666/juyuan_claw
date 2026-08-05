@@ -765,9 +765,6 @@ public sealed partial class ConnectionPage : Page
                          || plan.OperatorCard == OperatorCardState.Idle;
         OperatorSessionsLink.IsEnabled = linksEnabled;
         OperatorInstancesLink.IsEnabled = linksEnabled;
-        OperatorInstancesLink.Visibility = ProductBillingGate.IsLocked
-            ? Visibility.Collapsed
-            : Visibility.Visible;
         OperatorSection.Opacity = linksEnabled ? 1.0 : 0.65;
 
         // Status sub-row (mirrors PermissionsPage NodeStatusDot pattern):

@@ -67,10 +67,21 @@ internal static class ProductComputeBalanceClient
 
     public static string FormatDisplay(ProductComputeBalance balance)
     {
-        // Always one decimal (e.g. 5844.8). Do not round large balances to integers.
-        var text = balance.Balance.ToString("0.0", CultureInfo.InvariantCulture);
+        var text = FormatOneDecimalNoRound(balance.Balance);
         var unit = string.IsNullOrWhiteSpace(balance.Unit) ? "RH" : balance.Unit.Trim();
         return $"算力 {text} {unit}";
+    }
+
+    /// <summary>
+    /// Display-only: keep one decimal place by truncating toward zero (no round-half-up).
+    /// </summary>
+    public static string FormatOneDecimalNoRound(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return "0.0";
+
+        var truncated = Math.Truncate(value * 10.0) / 10.0;
+        return truncated.ToString("0.0", CultureInfo.InvariantCulture);
     }
 
     private static bool TryReadDouble(JsonElement data, string name, out double value)

@@ -381,7 +381,11 @@
 
         <!-- Main Content -->
         <Grid x:Name="NavContentHost"
-              Grid.Row="1">
+              Grid.Row="1"
+              SizeChanged="OnNavContentHostSizeChanged">
+            <Grid.Clip>
+                <RectangleGeometry x:Name="NavContentClip"/>
+            </Grid.Clip>
 
             <NavigationView
                 x:Uid="HubWindow_MainNavigation"

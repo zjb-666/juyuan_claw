@@ -160,15 +160,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
     // Per-thread retry count for LoadHistoryAsync to prevent unbounded retry loops.
     private readonly Dictionary<string, int> _historyRetryCount = new();
     private const int MaxHistoryRetries = 3;
-#if !OPENCLAW_TRAY_TESTS
-    // Product builds: coalesce chat.message streaming publishes so Reactor
-    // remounts stay under the LayoutCycle threshold.
-    private static readonly TimeSpan ProductStreamingPublishMinInterval = TimeSpan.FromMilliseconds(250);
-    private readonly Dictionary<string, (DateTimeOffset At, int TextLength)> _lastProductStreamPublish = new();
-    private static readonly TimeSpan ProductSendDebounceWindow = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan ProductDuplicateRemoteLifecycleWindow = TimeSpan.FromSeconds(15);
-    private readonly Dictionary<string, (string Text, DateTimeOffset At)> _lastProductSend = new();
-#endif
     private static readonly TimeSpan HistoryRetryDelay = TimeSpan.FromSeconds(2);
     private const int MaxDeferredAdmissionRetries = 8;
     private static readonly TimeSpan LocalEchoSuppressionWindow = TimeSpan.FromSeconds(30);
@@ -389,27 +380,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
 
         var trimmed = message.Trim();
         var nonce = Guid.NewGuid().ToString("N");
-
-#if !OPENCLAW_TRAY_TESTS
-        // Product Hub: Enter / SendKeys / double-click often fire twice within
-        // a second and the gateway runs two agent turns → two identical replies.
-        if (ProductBillingGate.IsLocked && !string.IsNullOrEmpty(trimmed))
-        {
-            lock (_gate)
-            {
-                if (_lastProductSend.TryGetValue(threadId, out var last) &&
-                    string.Equals(last.Text, trimmed, StringComparison.Ordinal) &&
-                    DateTimeOffset.UtcNow - last.At < ProductSendDebounceWindow)
-                {
-                    Logger.Warn(
-                        $"[ChatProvider] Dropping duplicate product send within {ProductSendDebounceWindow.TotalSeconds:0}s window");
-                    return;
-                }
-
-                _lastProductSend[threadId] = (trimmed, DateTimeOffset.UtcNow);
-            }
-        }
-#endif
 
         // Cache image attachments by filename so the timeline can render an
         // actual thumbnail preview (the display-text marker only carries the
@@ -1100,41 +1070,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         Task<ChatHistoryInfo>? historyRequest = null;
         try
         {
-#if !OPENCLAW_TRAY_TESTS
-            // Product builds: full chat.history (often 400KB+) remounts Reactor and
-            // trips LayoutCycleException on Hub Chat. Open an empty ready timeline;
-            // live messages still stream in. Users can chat immediately.
-            if (ProductBillingGate.IsLocked)
-            {
-                lock (_gate)
-                {
-                    if (_disposed ||
-                        _historyConnectionVersion != requestConnectionVersion ||
-                        GetResetVersionLocked(threadId) != requestResetVersion)
-                    {
-                        historyOutcome = ChatTelemetryOutcome.Canceled;
-                        return;
-                    }
-
-                    var prior = GetOrCreateTimelineLocked(threadId);
-                    _timelines[threadId] = prior with
-                    {
-                        HistoryLoaded = true,
-                        TurnActive = false,
-                        ActiveAssistantId = null,
-                        ActiveReasoningId = null,
-                    };
-                    _historyRevisions[threadId] = GetHistoryRevisionLocked(threadId) + 1;
-                    _historyLoaded.Add(threadId);
-                    _historyRetryCount.Remove(threadId);
-                }
-
-                PublishHistoryIfCurrent(requestConnectionVersion);
-                Logger.Info($"[ChatHistory] Product mode skipped full history for '{threadId}'");
-                return;
-            }
-#endif
-
             historyRequest = _bridge.RequestChatHistoryAsync(threadId);
             var history = await historyRequest
                 .WaitAsync(requestCancellation.Token)
@@ -1167,15 +1102,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                     .Select((m, i) => (Message: m, Index: i))
                     .ToList();
                 var ordered = OrderHistoryMessages(orderedItems);
-                // Cap rendered history. Full gateway transcripts (400KB+) have
-                // blanked the WinUI tree during Reactor remount on product builds.
-                const int maxHistoryMessagesToRender = 40;
-                if (ordered.Count > maxHistoryMessagesToRender)
-                {
-                    Logger.Warn(
-                        $"[ChatHistory] Truncating render from {ordered.Count} to last {maxHistoryMessagesToRender} messages");
-                    ordered = ordered.Skip(ordered.Count - maxHistoryMessagesToRender).ToList();
-                }
 
                 // Build per-entry metadata in lockstep with the reducer.
                 var rebuiltMeta = new Dictionary<string, ChatEntryMetadata>();
@@ -1347,20 +1273,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                                 var cached = TryMatchCachedTool(cachedTools, msg.Ts);
                                 var kind = cached?.ToolName ?? ClassifyFlattenedToolOutput(text);
                                 var label = cached?.Label ?? ExtractFlattenedToolSummary(text);
-#if !OPENCLAW_TRAY_TESTS
-                                if (ProductBillingGate.IsLocked)
-                                {
-                                    var summary = string.IsNullOrWhiteSpace(label) ? kind : label.Trim();
-                                    if (summary.Length > 120)
-                                        summary = summary[..120] + "…";
-                                    rebuilt = ApplyAndCaptureMeta(
-                                        rebuilt,
-                                        new ChatStatusEvent($"[{kind}] {summary}", ChatTone.Dim),
-                                        msgMeta);
-                                    break;
-                                }
-#endif
-                                var toolText = TruncateForToolOutput(text);
                                 Logger.Debug($"[ChatHistory]   → routed: TOOL chip kind='{kind}' cached={cached is not null}");
                                 rebuilt = ApplyAndCaptureMeta(
                                     rebuilt,
@@ -1368,7 +1280,7 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                                     msgMeta);
                                 rebuilt = ApplyAndCaptureMeta(
                                     rebuilt,
-                                    new ChatToolOutputEvent(toolText),
+                                    new ChatToolOutputEvent(text),
                                     msgMeta);
                                 break;
                             }
@@ -1392,25 +1304,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                                 var cached = TryMatchCachedTool(cachedTools, msg.Ts);
                                 var kind = cached?.ToolName ?? ClassifyFlattenedToolOutput(text);
                                 var label = cached?.Label ?? ExtractFlattenedToolSummary(text);
-#if !OPENCLAW_TRAY_TESTS
-                                // Product Hub chat: skip expandable tool cards. Large
-                                // tool dumps remount Reactor and have crashed the page.
-                                if (ProductBillingGate.IsLocked)
-                                {
-                                    var summary = string.IsNullOrWhiteSpace(label) ? kind : label.Trim();
-                                    if (summary.Length > 120)
-                                        summary = summary[..120] + "…";
-                                    rebuilt = ApplyAndCaptureMeta(
-                                        rebuilt,
-                                        new ChatStatusEvent($"[{kind}] {summary}", ChatTone.Dim),
-                                        msgMeta);
-                                    break;
-                                }
-#endif
-                                // History often ships 50KB+ exec dumps; rendering them
-                                // all at once white-screens the tray chat (InvalidCast /
-                                // layout cycle). Cap like live tool output.
-                                var toolText = TruncateForToolOutput(text);
                                 Logger.Debug($"[ChatHistory]   → routed: TOOL chip (role=toolresult, kind='{kind}' cached={cached is not null})");
                                 rebuilt = ApplyAndCaptureMeta(
                                     rebuilt,
@@ -1418,7 +1311,7 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                                     msgMeta);
                                 rebuilt = ApplyAndCaptureMeta(
                                     rebuilt,
-                                    new ChatToolOutputEvent(toolText),
+                                    new ChatToolOutputEvent(text),
                                     msgMeta);
                             }
                             break;
@@ -2737,7 +2630,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                 var userText = TruncateForChatEntry(EscapeUntrustedAttachmentMarkerLines(message.Text));
                 ChatEntryMetadata? userMeta;
                 ChatDataSnapshot? reconciledLocalQueuedSnapshot = null;
-                var dropDuplicateProductUserEcho = false;
                 lock (_gate)
                 {
                     userMeta = BuildLiveMetaLocked(
@@ -2747,23 +2639,10 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                         message.OpenClawSeq);
                     if (TryReconcileExistingLocalQueuedUserEchoLocked(msgThreadId, userText, userMeta))
                         reconciledLocalQueuedSnapshot = BuildSnapshotLocked();
-#if !OPENCLAW_TRAY_TESTS
-                    else if (ProductBillingGate.IsLocked &&
-                             IsDuplicateProductUserEchoLocked(msgThreadId, userText))
-                    {
-                        dropDuplicateProductUserEcho = true;
-                    }
-#endif
                 }
                 if (reconciledLocalQueuedSnapshot is not null)
                 {
                     Publish(reconciledLocalQueuedSnapshot);
-                    return;
-                }
-                if (dropDuplicateProductUserEcho)
-                {
-                    Logger.Info(
-                        $"[ChatProvider] Dropping duplicate product user echo threadId='{msgThreadId}' len={userText.Length}");
                     return;
                 }
 
@@ -2870,24 +2749,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
             return;
         }
 
-#if !OPENCLAW_TRAY_TESTS
-        if (ProductBillingGate.IsLocked && !message.IsFinal)
-        {
-            lock (_gate)
-            {
-                var now = DateTimeOffset.UtcNow;
-                if (_lastProductStreamPublish.TryGetValue(threadId, out var last) &&
-                    now - last.At < ProductStreamingPublishMinInterval &&
-                    cappedAssistantText.Length - last.TextLength < 120)
-                {
-                    // Still apply into timeline state without UI publish? Better to
-                    // skip both — next publish carries cumulative text.
-                    return;
-                }
-            }
-        }
-#endif
-
         _telemetry.ObserveInboundOutput(
             threadId,
             telemetryRunId,
@@ -2909,18 +2770,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                 ReconcilePrevious: true,
                 IsStreaming: !message.IsFinal),
             meta);
-
-#if !OPENCLAW_TRAY_TESTS
-        if (ProductBillingGate.IsLocked)
-        {
-            lock (_gate)
-            {
-                _lastProductStreamPublish[threadId] = (DateTimeOffset.UtcNow, cappedAssistantText.Length);
-                if (message.IsFinal)
-                    _lastProductStreamPublish.Remove(threadId);
-            }
-        }
-#endif
 
         if (hasUsage)
             SnapshotAssistantUsageContribution(threadId, meta);
@@ -3248,32 +3097,12 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                         _activeRunIds[threadId] = evt.RunId;
                         _activeRunStartSequences[threadId] = ++_lifecycleStartSequence;
 
-#if !OPENCLAW_TRAY_TESTS
-                        // Product Hub: after our local send already produced an
-                        // assistant bubble, the gateway sometimes starts a second
-                        // agent run (~3s later) and re-emits the same user +
-                        // assistant stub. Abort that run whether or not the
-                        // locally-initiated flag was already cleared.
-                        var suppressDuplicateProductLifecycle =
-                            ProductBillingGate.IsLocked &&
-                            ShouldSuppressDuplicateProductRemoteLifecycleLocked(threadId);
-                        if (suppressDuplicateProductLifecycle)
-                        {
-                            Logger.Warn(
-                                $"[ChatProvider] Suppressing duplicate remote lifecycle.start after local product send threadId='{threadId}' runId='{evt.RunId}'");
-                            _abortedRunIds.Add(evt.RunId);
-                            _abortedThreads.Add(threadId);
-                            deferredAbortRunId = evt.RunId;
-                            deferredAbortCount = Math.Max(1, deferredAbortCount);
-                        }
-                        else
-#endif
+                        // Detect remote turn: if the turn was NOT locally initiated,
+                        // a remote client (e.g. gateway web UI) sent the message.
+                        // Fetch the last user message from history so it appears in
+                        // the timeline before the assistant response.
                         if (!_locallyInitiatedThreads.Contains(threadId))
                         {
-                            // Detect remote turn: if the turn was NOT locally initiated,
-                            // a remote client (e.g. gateway web UI) sent the message.
-                            // Fetch the last user message from history so it appears in
-                            // the timeline before the assistant response.
                             _ = FetchRemoteUserMessageAsync(threadId);
                         }
 
@@ -4229,14 +4058,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
 
         try
         {
-#if !OPENCLAW_TRAY_TESTS
-            if (ProductBillingGate.IsLocked)
-            {
-                historyOutcome = ChatTelemetryOutcome.Canceled;
-                Logger.Info($"[ChatHistory] Product mode skipped remote-user backfill for '{threadId}'");
-                return;
-            }
-#endif
             var history = await _bridge.RequestChatHistoryAsync(threadId);
             if (history?.Messages is null || history.Messages.Count == 0) return;
 
@@ -4613,15 +4434,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
 
     private static ChatEvent? MapAssistantEvent(AgentEventInfo evt)
     {
-#if !OPENCLAW_TRAY_TESTS
-        // Product Hub Chat: ignore agent assistant stream entirely. The gateway
-        // also emits chat.message cumulative frames; honoring both remounts the
-        // Reactor tree dozens of times per second and LayoutCycleException freezes
-        // the Hub after one turn. chat.message alone is enough for one bubble.
-        if (ProductBillingGate.IsLocked)
-            return null;
-#endif
-
         if (evt.Data.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
 
         // Streaming token deltas: data.delta = "...next chunk..."
@@ -4961,7 +4773,7 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         return fallback;
     }
 
-    private const int ToolOutputMaxChars = 800;
+    private const int ToolOutputMaxChars = 4000;
     private static string TruncateForToolOutput(string text)
     {
         if (text.Length <= ToolOutputMaxChars) return text;
@@ -5966,12 +5778,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
             return AssistantQueueFrameDisposition.Drop;
         }
 
-        // Drop byte-equal (or whitespace-normalized) completed assistant
-        // retransmits even when the gateway omits ids — common after
-        // lifecycle.end + chat.message final races in product mode.
-        if (IsCompletedAssistantSameTextDuplicateLocked(threadId, assistantText))
-            return AssistantQueueFrameDisposition.Drop;
-
         if (string.IsNullOrEmpty(gatewayMessageId) &&
             openClawSeq is null &&
             IsIdentitylessAssistantRetransmitAcrossLocalUserBoundaryLocked(threadId, assistantText))
@@ -6098,144 +5904,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         }
 
         return false;
-    }
-
-    private bool IsCompletedAssistantSameTextDuplicateLocked(string threadId, string assistantText)
-    {
-        if (!_timelines.TryGetValue(threadId, out var timeline))
-            return false;
-
-        var normalizedIncoming = NormalizeAssistantDedupText(assistantText);
-        // Peel trailing user rows. Gateway double-runs often insert another
-        // identical user echo between two identical assistant stubs.
-        string? trailingUserText = null;
-        var i = timeline.Entries.Count - 1;
-        for (; i >= 0; i--)
-        {
-            var entry = timeline.Entries[i];
-            if (entry.Kind == ChatTimelineItemKind.Assistant)
-                break;
-            if (entry.Kind != ChatTimelineItemKind.User)
-                continue;
-
-            var userText = entry.Text.Trim();
-            if (trailingUserText is null)
-            {
-                trailingUserText = userText;
-                continue;
-            }
-
-            // Two different users with no assistant between them is not the
-            // double-run echo shape we are guarding against.
-            if (!string.Equals(trailingUserText, userText, StringComparison.Ordinal))
-                return false;
-        }
-
-        if (i < 0)
-            return false;
-
-        var assistantEntry = timeline.Entries[i];
-        if (assistantEntry.Kind != ChatTimelineItemKind.Assistant)
-            return false;
-
-        var sameText =
-            string.Equals(assistantEntry.Text, assistantText, StringComparison.Ordinal) ||
-            string.Equals(
-                NormalizeAssistantDedupText(assistantEntry.Text),
-                normalizedIncoming,
-                StringComparison.Ordinal);
-        if (!sameText)
-            return false;
-
-        // Direct retransmit onto the latest assistant bubble.
-        if (trailingUserText is null)
-            return true;
-
-        // Only drop when the trailing user is an echo of the prompt that
-        // produced this assistant. A new distinct user prompt may legitimately
-        // receive the same short reply text (e.g. "OK").
-        for (var j = i - 1; j >= 0; j--)
-        {
-            var entry = timeline.Entries[j];
-            if (entry.Kind == ChatTimelineItemKind.User)
-            {
-                return string.Equals(entry.Text.Trim(), trailingUserText, StringComparison.Ordinal);
-            }
-
-            if (entry.Kind == ChatTimelineItemKind.Assistant)
-                return false;
-        }
-
-        return false;
-    }
-
-#if !OPENCLAW_TRAY_TESTS
-    private bool IsDuplicateProductUserEchoLocked(string threadId, string userText)
-    {
-        if (!_lastProductSend.TryGetValue(threadId, out var lastSend) ||
-            DateTimeOffset.UtcNow - lastSend.At > ProductDuplicateRemoteLifecycleWindow)
-        {
-            return false;
-        }
-
-        var normalizedIncoming = userText.Trim();
-        if (!string.Equals(normalizedIncoming, lastSend.Text, StringComparison.Ordinal))
-            return false;
-
-        if (!_timelines.TryGetValue(threadId, out var timeline))
-            return false;
-
-        for (var i = timeline.Entries.Count - 1; i >= 0; i--)
-        {
-            var entry = timeline.Entries[i];
-            if (entry.Kind != ChatTimelineItemKind.User)
-                continue;
-            return string.Equals(entry.Text.Trim(), normalizedIncoming, StringComparison.Ordinal);
-        }
-
-        return false;
-    }
-
-    private bool ShouldSuppressDuplicateProductRemoteLifecycleLocked(string threadId)
-    {
-        if (!_lastProductSend.TryGetValue(threadId, out var lastSend) ||
-            DateTimeOffset.UtcNow - lastSend.At > ProductDuplicateRemoteLifecycleWindow)
-        {
-            return false;
-        }
-
-        if (!_timelines.TryGetValue(threadId, out var timeline))
-            return false;
-
-        var sawAssistant = false;
-        for (var i = timeline.Entries.Count - 1; i >= 0; i--)
-        {
-            var entry = timeline.Entries[i];
-            if (entry.Kind == ChatTimelineItemKind.Assistant)
-            {
-                sawAssistant = true;
-                continue;
-            }
-
-            if (entry.Kind != ChatTimelineItemKind.User)
-                continue;
-
-            if (!sawAssistant)
-                return false;
-
-            return string.Equals(entry.Text.Trim(), lastSend.Text, StringComparison.Ordinal);
-        }
-
-        return false;
-    }
-#endif
-
-    private static string NormalizeAssistantDedupText(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return string.Empty;
-        var collapsed = text.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
-        return collapsed;
     }
 
     private bool HasSendingQueuedMessagesLocked(string threadId)
@@ -7691,10 +7359,6 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         await _persistLock.WaitAsync().ConfigureAwait(false);
         try
         {
-#if !OPENCLAW_TRAY_TESTS
-            if (ProductBillingGate.IsLocked)
-                return;
-#endif
             await Task.Delay(500).ConfigureAwait(false); // let gateway finalize
             var history = await _bridge.RequestChatHistoryAsync(threadId).ConfigureAwait(false);
 
