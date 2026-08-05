@@ -176,6 +176,18 @@ internal sealed class ProductLoginWindow : WindowEx
                 hasStoredOperatorToken = false;
             }
 
+            // Saved record still holding an expired BootstrapToken must re-pair;
+            // SwitchGateway would keep sending the dead bootstrap credential.
+            var hasStaleBootstrap =
+                matchingGateway is not null &&
+                !string.IsNullOrWhiteSpace(matchingGateway.BootstrapToken);
+            if (hasStaleBootstrap && !string.IsNullOrWhiteSpace(bootstrap.SetupCode))
+            {
+                if (identityDir is not null)
+                    DeviceIdentity.TryClearDeviceToken(identityDir);
+                hasStoredOperatorToken = false;
+            }
+
             if (matchingGateway is not null && hasStoredOperatorToken)
             {
                 await _connectionManager.SwitchGatewayAsync(matchingGateway.Id);

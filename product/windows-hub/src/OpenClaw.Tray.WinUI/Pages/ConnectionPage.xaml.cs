@@ -2495,7 +2495,32 @@ public sealed partial class ConnectionPage : Page
         }
         try
         {
-            var result = await _connectionManager.ApplySetupCodeAsync(code);
+            // Recovery UI accepts setup code OR shared gateway token. Setup codes
+            // decode as base64 JSON; shared tokens are opaque (often hex). Always
+            // routing through ApplySetupCodeAsync left an expired BootstrapToken
+            // in place when the user pasted the shared token, so Connect kept
+            // failing with "bootstrap token invalid or expired".
+            var decoded = SetupCodeDecoder.Decode(code);
+            SetupCodeResult result;
+            if (decoded.Success)
+            {
+                result = await _connectionManager.ApplySetupCodeAsync(code);
+            }
+            else
+            {
+                var gatewayUrl = _gatewayRegistry?.GetActive()?.Url ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(gatewayUrl) ||
+                    !GatewayUrlHelper.IsValidGatewayUrl(gatewayUrl))
+                {
+                    ShowResult(
+                        $"✗ {decoded.Error ?? LocalizationHelper.GetString("ConnectionPage_CouldNotApplyCode")}",
+                        error: true);
+                    return;
+                }
+
+                result = await _connectionManager.ConnectWithSharedTokenAsync(gatewayUrl, code);
+            }
+
             if (result.Outcome == SetupCodeOutcome.Success)
                 ShowResult(LocalizationHelper.GetString("ConnectionPage_RepairedReconnecting"), error: false);
             else
