@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>聚元灵创</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 独立登录页 -->
+      <section id="login-view" class="login-page">
+        <div class="login-card">
+          <div class="login-brand">
+            <img class="brand-logo" src="/logo.png" alt="聚元灵创" />
+            <span>聚元灵创</span>
+          </div>
+          <p class="login-sub">使用平台账号登录</p>
+          <div class="login-tabs" role="tablist">
+            <button type="button" class="login-tab active" data-login-mode="password">密码登录</button>
+            <button type="button" class="login-tab" data-login-mode="sms">验证码登录</button>
+          </div>
+          <form id="login-form" class="login-form">
+            <div id="login-panel-password" class="login-panel">
+              <label>
+                账号
+                <input id="account" autocomplete="username" placeholder="账号或手机号" />
+              </label>
+              <label>
+                密码
+                <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
+              </label>
+            </div>
+            <div id="login-panel-sms" class="login-panel" hidden>
+              <label>
+                手机号
+                <input id="phone" inputmode="tel" autocomplete="tel" placeholder="请输入手机号" />
+              </label>
+              <label>
+                验证码
+                <div class="sms-row">
+                  <input id="sms-code" inputmode="numeric" autocomplete="one-time-code" placeholder="短信验证码" />
+                  <button id="sms-send-btn" type="button" class="ghost sms-send">获取验证码</button>
+                </div>
+              </label>
+            </div>
+            <button id="login-btn" type="submit" class="primary wide">登录</button>
+            <p id="login-error" class="error" hidden></p>
+          </form>
+        </div>
+      </section>
+
+      <!-- 点击登录 / 获取短信时再弹出旋转验证码 -->
+      <div id="captcha-modal" class="captcha-modal" hidden>
+        <div class="captcha-dialog" role="dialog" aria-modal="true" aria-labelledby="captcha-title">
+          <div class="captcha-head">
+            <strong id="captcha-title">安全验证</strong>
+            <button id="captcha-refresh" type="button" class="captcha-refresh" title="刷新验证码">刷新</button>
+          </div>
+          <p class="captcha-hint">拖动滑块，将中间圆图旋转到正确角度</p>
+          <div class="captcha-stage" id="captcha-stage" aria-label="旋转验证码">
+            <img id="captcha-bg" alt="" draggable="false" />
+            <img id="captcha-rotate" alt="" draggable="false" />
+          </div>
+          <label class="captcha-slider-label">
+            <input id="captcha-angle" type="range" min="0" max="359" value="0" />
+          </label>
+          <p id="captcha-error" class="error" hidden></p>
+          <div class="captcha-actions">
+            <button id="captcha-cancel" type="button" class="ghost">取消</button>
+            <button id="captcha-confirm" type="button" class="primary">确认</button>
+          </div>
+        </div>
+      </div>
+
+      <section id="shell-view" class="shell" hidden>
+        <aside class="sidebar">
+          <div class="sidebar-brand">
+            <img class="brand-logo" src="/logo.png" alt="" />
+            <span>聚元灵创</span>
+          </div>
+          <div class="user-card">
+            <div class="avatar" id="sidebar-avatar">D</div>
+            <div class="user-meta">
+              <div class="user-name" id="sidebar-name">—</div>
+              <div class="user-status" id="sidebar-status" data-state="checking">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span class="status-text">检测中</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <div class="nav-section-title">数字员工</div>
+            <div id="employee-list" class="employee-list">加载中…</div>
+          </div>
+
+          <div class="nav-section">
+            <div class="nav-section-title">页面</div>
+            <button class="nav-item active" data-page="home" type="button">
+              <span class="nav-icon">⌂</span><span>主页</span>
+            </button>
+            <button class="nav-item" data-page="recruitment" type="button" hidden>
+              <span class="nav-icon">▦</span><span>招聘工作台</span>
+            </button>
+            <button class="nav-item" data-page="skills" type="button">
+              <span class="nav-icon">✦</span><span>技能</span>
+            </button>
+            <button class="nav-item" data-page="settings" type="button">
+              <span class="nav-icon">⚙</span><span>设置</span>
+            </button>
+          </div>
+
+          <div class="sidebar-footer">
+            <button id="logout-btn" type="button" class="ghost block">退出登录</button>
+          </div>
+        </aside>
+
+        <main class="main">
+          <section id="page-home" class="page">
+            <header class="page-header">
+              <div>
+                <h2>主页</h2>
+                <p class="muted" id="home-employee-label">与当前数字员工对话</p>
+              </div>
+              <button id="hr-boss-login-btn" type="button" class="ghost page-action" hidden>Boss 登录</button>
+            </header>
+            <div id="employee-empty" class="employee-empty" hidden>
+              <h3>还没有数字员工</h3>
+              <p>请先在平台下单购买 AI 员工（例如「人事招聘」），权益同步后即可在此对话。每位用户的员工实例独立，可调教并沉淀记忆。</p>
+            </div>
+            <div id="employee-modes" class="employee-modes" hidden></div>
+            <div id="messages" class="messages"></div>
+            <form id="chat-form" class="composer">
+              <input id="prompt" placeholder="向聚元灵创发送消息…" autocomplete="off" />
+              <button type="submit" class="primary">发送</button>
+            </form>
+            <p id="chat-error" class="error" hidden></p>
+          </section>
+
+          <section id="page-recruitment" class="page" hidden>
+            <header class="page-header">
+              <div>
+                <h2>招聘工作台</h2>
+                <p class="muted">候选人沟通账本、人工待办与招聘漏斗</p>
+              </div>
+              <button id="hr-workspace-refresh" type="button" class="ghost page-action">刷新</button>
+            </header>
+            <div id="hr-workspace-summary" class="hr-metric-grid"></div>
+            <div class="hr-workspace-layout">
+              <section class="hr-panel">
+                <div class="hr-panel-head">
+                  <h3>候选人</h3>
+                  <span id="hr-workspace-job" class="muted"></span>
+                </div>
+                <div id="hr-candidate-list" class="hr-candidate-list"></div>
+              </section>
+              <section class="hr-panel hr-ledger-panel">
+                <div class="hr-panel-head">
+                  <h3 id="hr-ledger-title">沟通账本</h3>
+                </div>
+                <div id="hr-candidate-ledger" class="hr-ledger"></div>
+              </section>
+              <section class="hr-panel">
+                <div class="hr-panel-head">
+                  <h3>人工待办</h3>
+                  <span id="hr-review-count" class="hr-count-badge">0</span>
+                </div>
+                <div id="hr-review-list" class="hr-review-list"></div>
+              </section>
+            </div>
+            <p id="hr-workspace-error" class="error" hidden></p>
+          </section>
+
+          <section id="page-skills" class="page" hidden>
+            <header class="page-header">
+              <div>
+                <h2>技能</h2>
+                <p class="muted">技能清单来自 Gateway；开关按当前登录用户分别保存，互不影响</p>
+              </div>
+            </header>
+            <div id="skills-list" class="card-list"></div>
+            <p id="skills-error" class="error" hidden></p>
+          </section>
+
+          <section id="page-settings" class="page" hidden>
+            <div class="settings-layout">
+              <nav class="settings-nav">
+                <div class="nav-section-title">设置</div>
+                <button class="settings-item active" data-settings="profile" type="button">个人资料</button>
+                <button class="settings-item" data-settings="appearance" type="button">外观与设置</button>
+                <button class="settings-item" data-settings="notifications" type="button">通知</button>
+                <button id="restart-client-btn" class="settings-item settings-action" type="button">重启客户端</button>
+              </nav>
+
+              <div class="settings-content">
+                <div id="settings-profile" class="settings-panel">
+                  <h2>个人资料</h2>
+                  <p id="profile-source-hint" class="muted profile-hint" hidden></p>
+                  <label>显示名称<input id="profile-display-name" maxlength="64" /></label>
+                  <label id="profile-account-row" hidden>账号<input id="profile-account" readonly /></label>
+                  <label id="profile-phone-row" hidden>手机号<input id="profile-phone" readonly /></label>
+                  <label id="profile-bio-row">简介<textarea id="profile-bio" rows="3" maxlength="200"></textarea></label>
+                  <button id="save-profile" type="button" class="primary">保存</button>
+                  <p id="profile-msg" class="ok" hidden></p>
+                </div>
+
+                <div id="settings-appearance" class="settings-panel" hidden>
+                  <h2>外观与设置</h2>
+                  <label>主题
+                    <select id="appearance-theme">
+                      <option value="light">浅色</option>
+                      <option value="dark">深色</option>
+                      <option value="system">跟随系统</option>
+                    </select>
+                  </label>
+                  <label>字号
+                    <select id="appearance-font-size">
+                      <option value="sm">偏小</option>
+                      <option value="md" selected>标准</option>
+                      <option value="lg">偏大</option>
+                    </select>
+                  </label>
+                  <label class="switch-row"><span>紧凑布局</span><input id="appearance-compact" type="checkbox" /></label>
+                  <button id="save-appearance" type="button" class="primary">保存</button>
+                  <p id="appearance-msg" class="ok" hidden></p>
+                </div>
+
+                <div id="settings-notifications" class="settings-panel" hidden>
+                  <h2>通知</h2>
+                  <label class="switch-row"><span>桌面通知</span><input id="notify-desktop" type="checkbox" /></label>
+                  <label class="switch-row"><span>新回复声音</span><input id="notify-sound" type="checkbox" /></label>
+                  <label class="switch-row"><span>仅重要消息</span><input id="notify-important-only" type="checkbox" /></label>
+                  <button id="save-notifications" type="button" class="primary">保存</button>
+                  <p id="notifications-msg" class="ok" hidden></p>
+                  <h3 class="list-title">通知列表</h3>
+                  <div id="notifications-list" class="note-list"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </section>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

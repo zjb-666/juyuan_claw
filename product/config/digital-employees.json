@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "employees": {
+    "hr-recruitment": {
+      "name": "人事招聘数字员工",
+      "description": "标准漏斗：JD初筛(50/80)→打招呼提问→二次筛→简历→约面确认；含24h趣味复聊与人才库",
+      "emoji": "🧑‍💼",
+      "workflow": {
+        "steps": [
+          {
+            "id": "login",
+            "title": "本机登录 Boss",
+            "desc": "桌面客户端读取本机已登录 Boss（独立出口 IP）"
+          },
+          {
+            "id": "jd_screen",
+            "title": "JD/画像初筛",
+            "desc": "<50%不合适；≥80%进入打招呼提问"
+          },
+          {
+            "id": "greet_ask",
+            "title": "打招呼+基础提问",
+            "desc": "本机代聊；24h未回复趣味复聊"
+          },
+          {
+            "id": "answer_screen",
+            "title": "回答二次筛选",
+            "desc": "答对≥80%则请求并下载简历"
+          },
+          {
+            "id": "invite",
+            "title": "约面试",
+            "desc": "草稿需雇主确认后发送；通过未入职进人才库"
+          }
+        ]
+      },
+      "modes": [
+        {
+          "id": "login",
+          "label": "先登录 Boss",
+          "skill": "hr-boss-login",
+          "prompt": "引导用户用桌面客户端打开本机 Boss 窗口并检验登录态。不用服务器浏览器，不代填短信。"
+        },
+        {
+          "id": "funnel",
+          "label": "标准招聘漏斗",
+          "skill": "hr-boss-inbox",
+          "description": "招 N 个 / 筛今天投递 / 跑漏斗",
+          "prompt": "按人事漏斗执行：JD初筛(50/80)→打招呼提问→回答二次筛→简历→约面确认。"
+        },
+        {
+          "id": "search",
+          "label": "主动搜人",
+          "skill": "hr-boss-search",
+          "description": "对话识别：帮我搜 / 主动找人",
+          "prompt": "主动搜人后同样走漏斗阈值，不要跳过打招呼直接约面。"
+        },
+        {
+          "id": "greet_ask",
+          "label": "打招呼提问",
+          "skill": "hr-auto-rechat",
+          "description": "打招呼 / 基础提问 / 帮我问他们",
+          "prompt": "只对 JD≥80% 或待观察人选发岗位基础问题（本机）。"
+        },
+        {
+          "id": "screen_answers",
+          "label": "二次筛选",
+          "skill": "hr-candidate-rank",
+          "description": "根据回复二次筛选",
+          "prompt": "按回答正确率 50/80 再筛；≥80% 触发请求+下载简历。"
+        },
+        {
+          "id": "followup",
+          "label": "24h趣味复聊",
+          "skill": "hr-auto-rechat",
+          "description": "趣味复聊 / 24小时未回复",
+          "prompt": "对已打招呼未回复的合适人选发趣味性复聊。"
+        },
+        {
+          "id": "request_resume",
+          "label": "自动请求简历",
+          "skill": "hr-resume-request",
+          "description": "自动请求简历",
+          "prompt": "优先对答对≥80% 人选本机求简历。"
+        },
+        {
+          "id": "download_resume",
+          "label": "自动下载简历",
+          "skill": "hr-resume-download",
+          "description": "自动下载简历",
+          "prompt": "本机下载附件简历后可约面。"
+        }
+      ],
+      "capabilities": [
+        "boss_login_gate",
+        "client_ip_isolation",
+        "dialogue_intent_routing",
+        "funnel_jd_screen_50_80",
+        "funnel_greet_ask",
+        "funnel_answer_screen_50_80",
+        "funnel_followup_24h",
+        "auto_request_resume",
+        "auto_download_resume",
+        "auto_rechat",
+        "boss_active_search",
+        "boss_inbox_screen",
+        "candidate_rank",
+        "interview_invite_with_confirm",
+        "talent_pool",
+        "per_user_memory_isolation"
+      ],
+      "skills": [
+        "browser",
+        "hr-boss-login",
+        "hr-boss-search",
+        "hr-boss-inbox",
+        "hr-resume-request",
+        "hr-resume-download",
+        "hr-auto-rechat",
+        "hr-candidate-rank",
+        "hr-interview-invite"
+      ],
+      "templateDir": "hr-recruitment"
+    }
+  }
+}

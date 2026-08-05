@@ -1,0 +1,541 @@
+using System;
+using System.IO;
+using System.Text;
+using Xunit;
+using OpenClaw.Shared;
+using Org.BouncyCastle.Math.EC.Rfc8032;
+
+// slopwatch-ignore: SW002 Test intentionally disables obsolete warnings while covering legacy DeviceIdentity behavior.
+#pragma warning disable CS0618 // Obsolete - testing legacy methods
+
+namespace OpenClaw.Shared.Tests;
+
+/// <summary>
+/// Integration tests for DeviceIdentity — requires file system access.
+/// Gated by OPENCLAW_RUN_INTEGRATION=1.
+/// </summary>
+public class DeviceIdentityIntegrationTests
+{
+    private static string CreateTempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "openclaw-test-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static byte[] DecodeBase64Url(string value)
+    {
+        var padded = value.Replace('-', '+').Replace('_', '/');
+        switch (padded.Length % 4)
+        {
+            case 2: padded += "=="; break;
+            case 3: padded += "="; break;
+        }
+
+        return Convert.FromBase64String(padded);
+    }
+
+    [IntegrationFact]
+    public void Initialize_GeneratesNewKeypair()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            Assert.NotEmpty(identity.DeviceId);
+            Assert.Equal(64, identity.DeviceId.Length); // SHA256 hex = 64 chars
+            Assert.NotEmpty(identity.PublicKeyBase64Url);
+            Assert.Null(identity.DeviceToken);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void Initialize_LoadsExistingKeypair()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir);
+            id1.Initialize();
+            var deviceId = id1.DeviceId;
+            var pubKey = id1.PublicKeyBase64Url;
+
+            // Reload from same dir
+            var id2 = new DeviceIdentity(dir);
+            id2.Initialize();
+
+            Assert.Equal(deviceId, id2.DeviceId);
+            Assert.Equal(pubKey, id2.PublicKeyBase64Url);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void SignPayload_ProducesDeterministicSignature()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var sig1 = identity.SignPayload("nonce1", 1000, "node-host", "tok");
+            var sig2 = identity.SignPayload("nonce1", 1000, "node-host", "tok");
+
+            Assert.Equal(sig1, sig2);
+            Assert.NotEmpty(sig1);
+            // Ed25519 signature is 64 bytes → base64url is 86 chars (no padding)
+            Assert.Equal(86, sig1.Length);
+
+            var publicKey = DecodeBase64Url(identity.PublicKeyBase64Url);
+            var signature = DecodeBase64Url(sig1);
+            var payloadBytes = Encoding.UTF8.GetBytes(identity.BuildDebugPayload("nonce1", 1000, "node-host", "tok"));
+            Assert.True(Ed25519.Verify(signature, 0, publicKey, 0, payloadBytes, 0, payloadBytes.Length));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void SignPayload_DiffersForDifferentNonces()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var sig1 = identity.SignPayload("nonce-a", 1000, "node-host", "tok");
+            var sig2 = identity.SignPayload("nonce-b", 1000, "node-host", "tok");
+
+            Assert.NotEqual(sig1, sig2);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void BuildDebugPayload_HasCorrectFormat()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var payload = identity.BuildDebugPayload("my-nonce", 1234567890, "node-host", "my-token");
+
+            Assert.StartsWith("v2|", payload);
+            Assert.Contains(identity.DeviceId, payload);
+            Assert.Contains("|node-host|", payload);
+            Assert.Contains("|node|node|", payload);
+            Assert.Contains("|1234567890|", payload);
+            Assert.Contains("|my-token|", payload);
+            Assert.EndsWith("|my-nonce", payload);
+
+            // Full format: v2|{deviceId}|{clientId}|node|node||{signedAtMs}|{authToken}|{nonce}
+            var parts = payload.Split('|');
+            Assert.Equal(9, parts.Length);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void BuildConnectPayloadV3_HasCorrectFormat()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var payload = identity.BuildConnectPayloadV3(
+                nonce: "challenge-nonce",
+                signedAtMs: 1711648000000,
+                clientId: "cli",
+                clientMode: "cli",
+                role: "operator",
+                scopes: new[] { "operator.admin", "operator.read", "operator.write" },
+                authToken: "mytoken123",
+                platform: "windows",
+                deviceFamily: "desktop");
+
+            Assert.StartsWith("v3|", payload);
+            Assert.Contains(identity.DeviceId, payload);
+            Assert.Contains("|cli|cli|operator|operator.admin,operator.read,operator.write|", payload);
+            Assert.Contains("|1711648000000|mytoken123|challenge-nonce|windows|desktop", payload);
+
+            var parts = payload.Split('|');
+            Assert.Equal(11, parts.Length);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void BuildConnectPayloadV3_NormalizesPlatformMetadataForGatewayAuth()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var payload = identity.BuildConnectPayloadV3(
+                nonce: "challenge-nonce",
+                signedAtMs: 1711648000000,
+                clientId: "node-host",
+                clientMode: "node",
+                role: "node",
+                scopes: Array.Empty<string>(),
+                authToken: "mytoken123",
+                platform: "  Windows  ",
+                deviceFamily: "  Windows  ");
+
+            Assert.EndsWith("|windows|windows", payload);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void BuildConnectPayloadV2_HasCorrectFormat()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var payload = identity.BuildConnectPayloadV2(
+                nonce: "challenge-nonce",
+                signedAtMs: 1711648000000,
+                clientId: "cli",
+                clientMode: "cli",
+                role: "operator",
+                scopes: new[] { "operator.admin", "operator.read", "operator.write" },
+                authToken: "mytoken123");
+
+            Assert.StartsWith("v2|", payload);
+            Assert.Contains(identity.DeviceId, payload);
+            Assert.Contains("|cli|cli|operator|operator.admin,operator.read,operator.write|", payload);
+            Assert.Contains("|1711648000000|mytoken123|challenge-nonce", payload);
+
+            var parts = payload.Split('|');
+            Assert.Equal(9, parts.Length);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void StoreDeviceToken_PersistsAcrossReload()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir);
+            id1.Initialize();
+            Assert.Null(id1.DeviceToken);
+
+            id1.StoreDeviceToken("secret-device-token");
+            Assert.Equal("secret-device-token", id1.DeviceToken);
+            Assert.Null(id1.DeviceTokenScopes);
+
+            // Reload
+            var id2 = new DeviceIdentity(dir);
+            id2.Initialize();
+            Assert.Equal("secret-device-token", id2.DeviceToken);
+            Assert.Null(id2.DeviceTokenScopes);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void StoreDeviceTokenWithScopes_PersistsScopesAcrossReload()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir);
+            id1.Initialize();
+
+            id1.StoreDeviceTokenWithScopes(
+                "secret-device-token",
+                ["operator.read", "operator.write", "operator.read"]);
+
+            Assert.Equal("secret-device-token", id1.DeviceToken);
+            Assert.Equal(["operator.read", "operator.write"], id1.DeviceTokenScopes);
+
+            var id2 = new DeviceIdentity(dir);
+            id2.Initialize();
+            Assert.Equal("secret-device-token", id2.DeviceToken);
+            Assert.Equal(["operator.read", "operator.write"], id2.DeviceTokenScopes);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void StoreDeviceTokenForRole_Node_PreservesOperatorToken()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir);
+            id1.Initialize();
+            id1.StoreDeviceTokenWithScopes("operator-token", ["operator.read"]);
+            id1.StoreDeviceTokenForRole("node", "node-token", ["node.connect", "node.connect", "node.reconnect"]);
+
+            Assert.Equal("operator-token", id1.DeviceToken);
+            Assert.Equal(["operator.read"], id1.DeviceTokenScopes);
+            Assert.Equal("node-token", id1.NodeDeviceToken);
+            Assert.Equal(["node.connect", "node.reconnect"], id1.NodeDeviceTokenScopes);
+
+            var id2 = new DeviceIdentity(dir);
+            id2.Initialize();
+            Assert.Equal("operator-token", id2.DeviceToken);
+            Assert.Equal(["operator.read"], id2.DeviceTokenScopes);
+            Assert.Equal("node-token", id2.NodeDeviceToken);
+            Assert.Equal(["node.connect", "node.reconnect"], id2.NodeDeviceTokenScopes);
+            Assert.Equal("operator-token", DeviceIdentity.TryReadStoredDeviceToken(dir));
+            Assert.Equal("node-token", DeviceIdentity.TryReadStoredDeviceTokenForRole(dir, "node"));
+            Assert.True(DeviceIdentity.HasStoredDeviceTokenForRole(dir, "node"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("OPERATOR")]
+    [InlineData("adminstrator")]
+    public void StoreDeviceTokenForRole_InvalidRole_Throws(string role)
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                identity.StoreDeviceTokenForRole(role, "token"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("OPERATOR")]
+    [InlineData("adminstrator")]
+    public void TryReadStoredDeviceTokenForRole_InvalidRole_Throws(string role)
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                DeviceIdentity.TryReadStoredDeviceTokenForRole(dir, role));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("null")]
+    public void ReadStoredDeviceToken_WrongJsonRoot_ReturnsCorrupt(string json)
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "device-key-ed25519.json"), json);
+
+            var result = DeviceIdentity.ReadStoredDeviceToken(dir);
+
+            Assert.Null(result.Token);
+            Assert.Equal(DeviceTokenReadStatus.Corrupt, result.Status);
+            Assert.Contains("not a JSON object", result.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void DifferentDirs_ProduceDifferentIdentities()
+    {
+        var dir1 = CreateTempDir();
+        var dir2 = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir1);
+            id1.Initialize();
+
+            var id2 = new DeviceIdentity(dir2);
+            id2.Initialize();
+
+            Assert.NotEqual(id1.DeviceId, id2.DeviceId);
+            Assert.NotEqual(id1.PublicKeyBase64Url, id2.PublicKeyBase64Url);
+        }
+        finally
+        {
+            Directory.Delete(dir1, true);
+            Directory.Delete(dir2, true);
+        }
+    }
+
+    [IntegrationFact]
+    public void SignPayload_ThrowsBeforeInitialize()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            // Don't call Initialize()
+            Assert.Throws<InvalidOperationException>(() =>
+                identity.SignPayload("nonce", 1000, "client", "token"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void PublicKeyBase64Url_IsValidBase64Url()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var identity = new DeviceIdentity(dir);
+            identity.Initialize();
+
+            var pubKey = identity.PublicKeyBase64Url;
+            // Base64url: no +, /, or = padding
+            Assert.DoesNotContain("+", pubKey);
+            Assert.DoesNotContain("/", pubKey);
+            Assert.DoesNotContain("=", pubKey);
+            
+            // Decode and verify Ed25519 public key is exactly 32 bytes
+            var bytes = DecodeBase64Url(pubKey);
+            Assert.Equal(32, bytes.Length);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bot B1 — atomic device-key writes
+    //
+    // The structural contract is: every code path that writes the key file
+    // does so via temp+rename, leaves no orphan .tmp files behind on success,
+    // and preserves all non-token fields when TryClearDeviceToken runs.
+    // True crash-mid-write atomicity cannot be unit-tested without a process-
+    // kill harness; these tests pin the observable shape of the helper.
+    // -----------------------------------------------------------------------
+
+    [IntegrationFact]
+    public void TryClearDeviceToken_LeavesNoTempFileBehind()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id = new DeviceIdentity(dir);
+            id.Initialize();
+            id.StoreDeviceToken("operator-token");
+
+            var cleared = DeviceIdentity.TryClearDeviceToken(dir);
+            Assert.True(cleared);
+
+            // No sibling .device-key-ed25519.json.<guid>.tmp files left behind.
+            var leftovers = Directory.GetFiles(dir, ".device-key-ed25519.json.*.tmp");
+            Assert.Empty(leftovers);
+
+            // Final file is still valid JSON.
+            var keyPath = Path.Combine(dir, "device-key-ed25519.json");
+            Assert.True(File.Exists(keyPath));
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(keyPath));
+            Assert.Equal(System.Text.Json.JsonValueKind.Object, doc.RootElement.ValueKind);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void TryClearDeviceToken_PreservesNonTokenFields_AfterAtomicWrite()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id1 = new DeviceIdentity(dir);
+            id1.Initialize();
+            var deviceId = id1.DeviceId;
+            var pubKey = id1.PublicKeyBase64Url;
+            id1.StoreDeviceTokenWithScopes("operator-token", ["operator.read"]);
+            id1.StoreDeviceTokenForRole("node", "node-token", ["node.connect"]);
+
+            // Clear operator token only.
+            Assert.True(DeviceIdentity.TryClearDeviceToken(dir));
+
+            // Identity, public key, and node token survive.
+            var id2 = new DeviceIdentity(dir);
+            id2.Initialize();
+            Assert.Equal(deviceId, id2.DeviceId);
+            Assert.Equal(pubKey, id2.PublicKeyBase64Url);
+            Assert.Null(id2.DeviceToken);
+            Assert.Null(id2.DeviceTokenScopes);
+            Assert.Equal("node-token", id2.NodeDeviceToken);
+            Assert.Equal(["node.connect"], id2.NodeDeviceTokenScopes);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [IntegrationFact]
+    public void StoreDeviceToken_LeavesNoTempFileBehind()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            var id = new DeviceIdentity(dir);
+            id.Initialize();
+            id.StoreDeviceToken("operator-token-1");
+            id.StoreDeviceToken("operator-token-2"); // overwrite path
+
+            var leftovers = Directory.GetFiles(dir, ".device-key-ed25519.json.*.tmp");
+            Assert.Empty(leftovers);
+
+            // Final state is the second token.
+            Assert.Equal("operator-token-2", DeviceIdentity.TryReadStoredDeviceToken(dir));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+}
+
+/// <summary>
+/// Unit tests for DeviceIdentity that don't touch the file system.
+/// These verify model defaults and types.
+/// </summary>
+public class DeviceIdentityUnitTests
+{
+    [Fact]
+    public void StoreDeviceToken_RejectsEmptyToken()
+    {
+        var identity = new DeviceIdentity(Path.GetTempPath());
+
+        Assert.Throws<ArgumentException>(() => identity.StoreDeviceToken(""));
+        Assert.Throws<ArgumentException>(() => identity.StoreDeviceToken("   "));
+    }
+
+    [Fact]
+    public void PairingStatusEventArgs_HasCorrectProperties()
+    {
+        var args = new PairingStatusEventArgs(PairingStatus.Paired, "abc123", "Approved");
+        Assert.Equal(PairingStatus.Paired, args.Status);
+        Assert.Equal("abc123", args.DeviceId);
+        Assert.Equal("Approved", args.Message);
+    }
+
+    [Fact]
+    public void PairingStatusEventArgs_MessageCanBeNull()
+    {
+        var args = new PairingStatusEventArgs(PairingStatus.Pending, "def456");
+        Assert.Null(args.Message);
+    }
+
+    [Fact]
+    public void PairingStatus_HasExpectedValues()
+    {
+        Assert.Equal(0, (int)PairingStatus.Unknown);
+        Assert.Equal(1, (int)PairingStatus.Pending);
+        Assert.Equal(2, (int)PairingStatus.Paired);
+        Assert.Equal(3, (int)PairingStatus.Rejected);
+    }
+}

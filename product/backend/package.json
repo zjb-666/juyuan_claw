@@ -1,0 +1,9 @@
+{
+  "name": "juyuan-lingchuang",
+  "productName": "聚元灵创",
+  "version": "0.1.8",
+  "private": true,
+  "description": "聚元灵创桌面客户端（产品 UI + 本机内嵌 Boss 浏览器，不含密钥）",
+  "author": "聚元灵创",
+  "main": "main.js"
+}

@@ -1,0 +1,34 @@
+{
+  "version": "0.7.0-alpha",
+  "containerId": "golden-locked-down",
+  "lifecycle": {
+    "destroyOnExit": true,
+    "preservePolicy": false
+  },
+  "process": {},
+  "filesystem": {
+    "readwritePaths": [
+      "C:\\Golden\\Scratch"
+    ],
+    "readonlyPaths": []
+  },
+  "ui": {
+    "disable": true,
+    "clipboard": "none",
+    "injection": false
+  },
+  "network": {
+    "defaultPolicy": "block",
+    "enforcementMode": "capabilities"
+  },
+  "processContainer": {
+    "leastPrivilege": false,
+    "capabilities": [],
+    "ui": {
+      "isolation": "container",
+      "desktopSystemControl": false,
+      "systemSettings": "none",
+      "ime": false
+    }
+  }
+}

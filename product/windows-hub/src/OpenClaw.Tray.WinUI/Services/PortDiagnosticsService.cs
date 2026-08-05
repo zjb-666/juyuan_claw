@@ -1,0 +1,197 @@
+using OpenClaw.Connection;
+using OpenClaw.Shared;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Net.NetworkInformation;
+
+namespace OpenClawTray.Services;
+
+public static class PortDiagnosticsService
+{
+    public static List<PortDiagnosticInfo> BuildDiagnostics(
+        GatewayTopologyInfo topology,
+        TunnelCommandCenterInfo? tunnel,
+        int? browserControlPortOverride = null,
+        bool useSshTunnelForBrowserProxy = false,
+        bool allowGatewayPortFallback = true)
+    {
+        var localTcpPorts = GetLocalTcpListeners();
+        var diagnostics = new List<PortDiagnosticInfo>();
+
+        if (TryGetPort(topology.GatewayUrl, out var gatewayPort) && topology.IsLoopback)
+        {
+            diagnostics.Add(Create("Gateway endpoint", gatewayPort, localTcpPorts));
+        }
+
+        if (TryGetBrowserProxyPort(
+                topology,
+                tunnel,
+                browserControlPortOverride,
+                useSshTunnelForBrowserProxy,
+                allowGatewayPortFallback,
+                out var browserProxyPort))
+        {
+            diagnostics.Add(Create("Browser proxy host", browserProxyPort, localTcpPorts));
+        }
+
+        if (tunnel != null && TryGetEndpointPort(tunnel.LocalEndpoint, out var tunnelPort))
+        {
+            diagnostics.Add(Create("SSH tunnel local forward", tunnelPort, localTcpPorts));
+        }
+
+        return diagnostics
+            .GroupBy(d => $"{d.Purpose}|{d.Port}", StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+    }
+
+    private static PortDiagnosticInfo Create(string purpose, int port, IReadOnlyDictionary<int, TcpListenerOwner> localTcpPorts)
+    {
+        var isListening = localTcpPorts.ContainsKey(port);
+        localTcpPorts.TryGetValue(port, out var owner);
+        var ownerDetail = owner.ProcessId > 0
+            ? $" Owner: {FormatProcessName(owner.ProcessName)} (PID {owner.ProcessId})."
+            : "";
+        return new PortDiagnosticInfo
+        {
+            Purpose = purpose,
+            Port = port,
+            IsLocal = true,
+            IsListening = isListening,
+            OwningProcessId = owner.ProcessId > 0 ? owner.ProcessId : null,
+            OwningProcessName = owner.ProcessName,
+            Detail = isListening
+                ? $"Local TCP port {port} has a listener.{ownerDetail}"
+                : $"Local TCP port {port} does not currently have a listener."
+        };
+    }
+
+    private static IReadOnlyDictionary<int, TcpListenerOwner> GetLocalTcpListeners()
+    {
+        var listeners = new Dictionary<int, TcpListenerOwner>();
+        try
+        {
+            foreach (var endpoint in IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners())
+            {
+                listeners.TryAdd(endpoint.Port, new TcpListenerOwner(0, null));
+            }
+        }
+        catch (NetworkInformationException)
+        {
+            return listeners;
+        }
+
+        foreach (var owner in GetWindowsTcpListenerOwners())
+        {
+            listeners[owner.Port] = new TcpListenerOwner(owner.ProcessId, ResolveProcessName(owner.ProcessId));
+        }
+
+        return listeners;
+    }
+
+    private static bool TryGetPort(string? url, out int port)
+    {
+        port = 0;
+        if (string.IsNullOrWhiteSpace(url) ||
+            !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Port <= 0)
+        {
+            return false;
+        }
+
+        port = uri.Port;
+        return true;
+    }
+
+    private static bool TryGetBrowserProxyPort(
+        GatewayTopologyInfo topology,
+        TunnelCommandCenterInfo? tunnel,
+        int? browserControlPortOverride,
+        bool useSshTunnelForBrowserProxy,
+        bool allowGatewayPortFallback,
+        out int port)
+    {
+        port = 0;
+
+        // Probe the SAME endpoint browser.proxy dials by resolving through BrowserControlEndpoint,
+        // so the diagnostic's listener check can never diverge from the effective control port.
+        var tunnelLocalPort = useSshTunnelForBrowserProxy &&
+            TryGetEndpointPort(tunnel?.LocalEndpoint, out var tlp)
+                ? tlp
+                : (int?)null;
+
+        // Gateway port + 2 is only a sensible fallback for co-located / known split kinds; for any
+        // other topology we only probe when an explicit override pins a real local listener.
+        var gatewayFallbackAllowed =
+            topology.DetectedKind is (GatewayKind.WindowsNative or GatewayKind.Wsl or GatewayKind.MacOverSsh);
+        var gatewayPort = allowGatewayPortFallback && gatewayFallbackAllowed && TryGetPort(topology.GatewayUrl, out var gp)
+            ? gp
+            : (int?)null;
+
+        if (BrowserControlEndpoint.TryResolveControlPort(
+                gatewayLocalPort: gatewayPort,
+                useSshTunnel: useSshTunnelForBrowserProxy,
+                sshTunnelLocalPort: tunnelLocalPort,
+                controlPortOverride: browserControlPortOverride,
+                out var resolved,
+                out _,
+                allowGatewayPortFallback))
+        {
+            port = resolved;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetEndpointPort(string? endpoint, out int port)
+    {
+        port = 0;
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return false;
+
+        var separator = endpoint.LastIndexOf(':');
+        return separator >= 0 &&
+            int.TryParse(endpoint.AsSpan(separator + 1), out port) &&
+            port is >= 1 and <= 65535;
+    }
+
+    private static string FormatProcessName(string? processName) =>
+        string.IsNullOrWhiteSpace(processName) ? "unknown process" : processName;
+
+    private static string? ResolveProcessName(int processId)
+    {
+        if (processId <= 0)
+            return null;
+
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.ProcessName;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    private static IEnumerable<TcpListenerProcessOwner> GetWindowsTcpListenerOwners()
+    {
+        foreach (var listener in WindowsTcpListenerSnapshot.Capture().Listeners)
+            yield return new TcpListenerProcessOwner(listener.Port, listener.ProcessId);
+    }
+
+    private readonly record struct TcpListenerOwner(int ProcessId, string? ProcessName);
+    private readonly record struct TcpListenerProcessOwner(int Port, int ProcessId);
+
+}

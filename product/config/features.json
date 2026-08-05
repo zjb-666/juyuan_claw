@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "features": {
+    "auth.login": true,
+    "chat.send": true,
+    "chat.history": true,
+    "settings": true,
+    "settings.profile": true,
+    "settings.appearance": true,
+    "settings.notifications": true,
+    "skills": true,
+    "plugins": false,
+    "channels": false,
+    "doctor": false,
+    "gateway.raw": false,
+    "billing": false
+  },
+  "publicFeatures": [
+    "auth.login",
+    "chat.send",
+    "chat.history",
+    "settings",
+    "settings.profile",
+    "settings.appearance",
+    "settings.notifications",
+    "skills"
+  ]
+}
