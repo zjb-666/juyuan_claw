@@ -469,6 +469,7 @@ public partial class OpenClawGatewayClient
     public Task<bool> PatchSessionAsync(string key, SessionPatch patch)
     {
         if (string.IsNullOrWhiteSpace(key)) return Task.FromResult(false);
+        if (_operatorAdminScopeUnavailable) return Task.FromResult(false);
         if (patch is null || !patch.HasChanges) return Task.FromResult(false);
         return TrySendTrackedRequestAsync("sessions.patch", patch.ToPayload(key));
     }

@@ -4,6 +4,7 @@ using Microsoft.Web.WebView2.Core;
 using OpenClaw.Connection;
 using OpenClaw.Shared;
 using System;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -154,10 +155,27 @@ internal sealed class ProductLoginWindow : WindowEx
             _loading.IsActive = true;
             var bootstrap = await RequestBootstrapAsync(accessToken);
             var matchingGateway = _gatewayRegistry.FindByUrl(bootstrap.GatewayUrl);
-            var hasStoredOperatorToken = matchingGateway is not null &&
-                DeviceIdentity.HasStoredDeviceTokenForRole(
-                    _gatewayRegistry.GetIdentityDirectory(matchingGateway.Id),
-                    "operator");
+            var identityDir = matchingGateway is null
+                ? null
+                : _gatewayRegistry.GetIdentityDirectory(matchingGateway.Id);
+            var hasStoredOperatorToken = identityDir is not null &&
+                DeviceIdentity.HasStoredDeviceTokenForRole(identityDir, "operator");
+            var storedHasAdmin = identityDir is not null &&
+                StoredOperatorScopesIncludeAdmin(identityDir);
+
+            // Write-only bootstrap pairings cannot sessions.patch (model fixes).
+            // When the platform returns a fresh setup code and the stored device
+            // token lacks operator.admin, clear the token and re-pair so connect
+            // can request the upgrade scopes.
+            if (matchingGateway is not null &&
+                hasStoredOperatorToken &&
+                !storedHasAdmin &&
+                !string.IsNullOrWhiteSpace(bootstrap.SetupCode))
+            {
+                DeviceIdentity.TryClearDeviceToken(identityDir!);
+                hasStoredOperatorToken = false;
+            }
+
             if (matchingGateway is not null && hasStoredOperatorToken)
             {
                 await _connectionManager.SwitchGatewayAsync(matchingGateway.Id);
@@ -244,6 +262,38 @@ internal sealed class ProductLoginWindow : WindowEx
         left.Port == right.Port;
 
     private sealed record DesktopBootstrap(string GatewayUrl, string? SetupCode);
+
+    private static bool StoredOperatorScopesIncludeAdmin(string identityDirectory)
+    {
+        var keyPath = Path.Combine(identityDirectory, "device-key-ed25519.json");
+        if (!File.Exists(keyPath))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(keyPath));
+            if (!document.RootElement.TryGetProperty("DeviceTokenScopes", out var scopes) ||
+                scopes.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var scope in scopes.EnumerateArray())
+            {
+                if (scope.ValueKind == JsonValueKind.String &&
+                    string.Equals(scope.GetString(), "operator.admin", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
 
     private void ShowError(string message)
     {

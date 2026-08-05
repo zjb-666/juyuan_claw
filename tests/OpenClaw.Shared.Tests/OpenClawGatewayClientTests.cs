@@ -470,6 +470,9 @@ public class OpenClawGatewayClientTests
         public bool GetOperatorReadScopeUnavailable() =>
             GetPrivateField<bool>("_operatorReadScopeUnavailable");
 
+        public bool GetOperatorAdminScopeUnavailable() =>
+            GetPrivateField<bool>("_operatorAdminScopeUnavailable");
+
         public List<ConnectionStatus> CaptureStatusChanges()
         {
             var changes = new List<ConnectionStatus>();
@@ -701,7 +704,7 @@ public class OpenClawGatewayClientTests
     }
 
     [Fact]
-    public void OperatorConnect_FreshDevice_RequestsBootstrapHandoffScopes()
+    public void OperatorConnect_FreshDevice_RequestsBootstrapHandoffScopesPlusAdminUpgrade()
     {
         var helper = new GatewayClientTestHelper(tokenIsBootstrapToken: true);
         helper.SetDeviceTokenForTest(null);
@@ -709,11 +712,13 @@ public class OpenClawGatewayClientTests
         var scopes = helper.GetRequestedOperatorScopes();
         var auth = helper.BuildAuthPayload();
 
-        Assert.Equal(
-            ["operator.approvals", "operator.read", "operator.talk.secrets", "operator.write"],
-            scopes);
-        Assert.DoesNotContain("operator.admin", scopes);
-        Assert.DoesNotContain("operator.pairing", scopes);
+        Assert.Contains("operator.approvals", scopes);
+        Assert.Contains("operator.read", scopes);
+        Assert.Contains("operator.talk.secrets", scopes);
+        Assert.Contains("operator.write", scopes);
+        // Product Hub needs sessions.patch; bootstrap must also ask for admin.
+        Assert.Contains("operator.admin", scopes);
+        Assert.Contains("operator.pairing", scopes);
         Assert.Equal("test-token", auth["bootstrapToken"]);
         Assert.False(auth.ContainsKey("token"));
         Assert.False(auth.ContainsKey("deviceToken"));
@@ -813,7 +818,7 @@ public class OpenClawGatewayClientTests
     }
 
     [Fact]
-    public void OperatorConnect_PairedDeviceWithStoredScopes_RequestsStoredScopes()
+    public void OperatorConnect_PairedDeviceWithStoredScopes_AlsoRequestsAdminUpgradeScopes()
     {
         var helper = new GatewayClientTestHelper();
         helper.SetDeviceTokenForTest(
@@ -822,9 +827,13 @@ public class OpenClawGatewayClientTests
 
         var scopes = helper.GetRequestedOperatorScopes();
 
-        Assert.Equal(
-            ["operator.approvals", "operator.read", "operator.talk.secrets", "operator.write"],
-            scopes);
+        Assert.Contains("operator.approvals", scopes);
+        Assert.Contains("operator.read", scopes);
+        Assert.Contains("operator.talk.secrets", scopes);
+        Assert.Contains("operator.write", scopes);
+        // Reconnect must re-ask for admin/pairing so product bootstrap tokens can upgrade.
+        Assert.Contains("operator.admin", scopes);
+        Assert.Contains("operator.pairing", scopes);
     }
 
     [Fact]
@@ -3595,6 +3604,29 @@ public class OpenClawGatewayClientTests
         """);
 
         Assert.True(helper.GetOperatorReadScopeUnavailable());
+    }
+
+    [Theory]
+    [InlineData("sessions.patch")]
+    [InlineData("sessions.reset")]
+    [InlineData("sessions.delete")]
+    [InlineData("sessions.compact")]
+    public void HandleRequestError_MissingOperatorAdminScope_SetsUnavailableFlag(string method)
+    {
+        var helper = new GatewayClientTestHelper();
+        var reqId = $"req-scope-{method}";
+        helper.TrackPendingRequest(reqId, method);
+
+        helper.ProcessRawMessage($$"""
+        {
+            "type": "res",
+            "id": "{{reqId}}",
+            "ok": false,
+            "error": "missing scope: operator.admin"
+        }
+        """);
+
+        Assert.True(helper.GetOperatorAdminScopeUnavailable());
     }
 
     // --- HandleRequestError: unknown method fallbacks ---

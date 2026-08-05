@@ -2405,7 +2405,45 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         {
             TryDispatchNextQueuedSend(threadId);
         }
+
+#if !OPENCLAW_TRAY_TESTS
+        MaybeEnsureProductSessionModels(sessions);
+#endif
     }
+
+#if !OPENCLAW_TRAY_TESTS
+    private void MaybeEnsureProductSessionModels(SessionInfo[]? sessions)
+    {
+        if (!ProductBillingGate.IsLocked || sessions is null || sessions.Length == 0)
+            return;
+
+        foreach (var session in sessions)
+        {
+            if (string.IsNullOrWhiteSpace(session.Key))
+                continue;
+            if (ProductPlatformBilling.IsAllowedModel(session.Model))
+                continue;
+
+            var threadId = session.Key;
+            var currentModel = session.Model ?? "(unset)";
+            Logger.Warn(
+                $"[ChatProvider] Product session model '{currentModel}' is not allowlisted; requesting '{ProductPlatformBilling.DefaultModelId}' for '{threadId}'");
+            _ = EnsureProductSessionModelAsync(threadId);
+        }
+    }
+
+    private async Task EnsureProductSessionModelAsync(string threadId)
+    {
+        try
+        {
+            await SetModelAsync(threadId, ProductPlatformBilling.DefaultModelId);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[ChatProvider] Failed to patch product session model for '{threadId}': {ex.Message}");
+        }
+    }
+#endif
 
     internal static bool ShouldPreserveLiveEntryDuringAuthoritativeReload(
         ChatEntryMetadata? metadata,
@@ -2817,6 +2855,20 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         if (string.IsNullOrEmpty(message.Text))
             return;
 
+        // Gateway sometimes surfaces agent crashes as an assistant chat.message.
+        // Render once as an error status instead of a normal reply bubble.
+        if (IsGatewayAgentRunFailureStub(message.Text))
+        {
+            var failThread = message.SessionKey;
+            ChatEntryMetadata? failMeta;
+            lock (_gate) { failMeta = BuildLiveMetaLocked(failThread, message.Ts, message.OpenClawId, message.OpenClawSeq); }
+            ApplyEventAndPublish(
+                failThread,
+                new ChatErrorEvent(ProductPlatformBilling.MapUserFacingErrorOrOriginal(message.Text)),
+                failMeta);
+            return;
+        }
+
         var threadId = message.SessionKey;
         var cappedAssistantText = RepairContentBlockSeams(TruncateForChatEntry(message.Text));
         AssistantQueueFrameDisposition assistantDisposition;
@@ -2983,7 +3035,19 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
         // see the rationale in OnChatMessageReceived.
         if (string.IsNullOrEmpty(evt.SessionKey))
         {
-            Logger.Warn($"[ChatProvider] Dropping agent event with empty sessionKey (stream={evt.Stream})");
+            // run_status / lifecycle noise without a session key is common after
+            // aborted or short agent runs. Log it, but do not raise the once-per-
+            // process "缺少会话键" banner — that banner is reserved for chat
+            // timeline frames that would actually corrupt the transcript.
+            var stream = evt.Stream ?? "";
+            if (string.Equals(stream, "run_status", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(stream, "lifecycle", StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Debug($"[ChatProvider] Ignoring keyless agent event stream='{stream}'");
+                return;
+            }
+
+            Logger.Warn($"[ChatProvider] Dropping agent event with empty sessionKey (stream={stream})");
             RaiseKeylessEventDiagnosticOnce();
             return;
         }
@@ -3249,22 +3313,19 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                         _activeRunStartSequences[threadId] = ++_lifecycleStartSequence;
 
 #if !OPENCLAW_TRAY_TESTS
-                        // Product Hub: after our local send already produced an
-                        // assistant bubble, the gateway sometimes starts a second
-                        // agent run (~3s later) and re-emits the same user +
-                        // assistant stub. Abort that run whether or not the
-                        // locally-initiated flag was already cleared.
+                        // Product Hub: after a local send the gateway sometimes
+                        // starts a second agent run (~3s later) and re-emits the
+                        // same user echo. Do NOT chat.abort that run — aborting it
+                        // kills legitimate retries and leaves "agent run failed"
+                        // stubs. Only skip remote user backfill; same-text
+                        // assistant/user dedup still collapses duplicate bubbles.
                         var suppressDuplicateProductLifecycle =
                             ProductBillingGate.IsLocked &&
                             ShouldSuppressDuplicateProductRemoteLifecycleLocked(threadId);
                         if (suppressDuplicateProductLifecycle)
                         {
                             Logger.Warn(
-                                $"[ChatProvider] Suppressing duplicate remote lifecycle.start after local product send threadId='{threadId}' runId='{evt.RunId}'");
-                            _abortedRunIds.Add(evt.RunId);
-                            _abortedThreads.Add(threadId);
-                            deferredAbortRunId = evt.RunId;
-                            deferredAbortCount = Math.Max(1, deferredAbortCount);
+                                $"[ChatProvider] Skipping remote user backfill for duplicate lifecycle.start after local product send threadId='{threadId}' runId='{evt.RunId}'");
                         }
                         else
 #endif
@@ -4712,6 +4773,13 @@ public sealed class OpenClawChatDataProvider : IChatDataProvider
                 code = ec.GetString();
         }
         return ProductPlatformBilling.MapUserFacingErrorOrOriginal(raw, code);
+    }
+
+    private static bool IsGatewayAgentRunFailureStub(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        return text.Contains("agent run failed before producing a reply", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ChatEvent? MapToolEvent(AgentEventInfo evt)

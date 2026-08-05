@@ -107,6 +107,11 @@ public static class ProductPlatformBilling
             return "当前模型不在平台白名单内，请改用可用模型。";
         }
 
+        if (ContainsInsensitive(messageOrCode, "agent run failed before producing a reply"))
+        {
+            return "助手本次未能生成回复。请切换到白名单模型（如 qwen3_6_plus），或联系运维检查 Gateway 模型与算力出口。";
+        }
+
         if (ContainsCode(messageOrCode, UnauthorizedCode) ||
             CodesContain(extraCodes, UnauthorizedCode))
         {
