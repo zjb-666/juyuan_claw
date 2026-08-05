@@ -23,7 +23,7 @@ public class SessionTranscriptFormatterTests
 
         var text = SessionTranscriptFormatter.Format(history);
 
-        Assert.Contains("OpenClaw session transcript", text);
+        Assert.Contains("聚元灵创会话记录", text);
         Assert.Contains("Session: main", text);
         Assert.Contains("Session ID: uuid-1", text);
         Assert.Contains("Messages: 2", text);

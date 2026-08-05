@@ -74,7 +74,7 @@ public class SystemCapabilityTests
 
         var res = await cap.ExecuteAsync(req);
         Assert.True(res.Ok);
-        Assert.Equal("OpenClaw", received!.Title);
+        Assert.Equal("聚元灵创", received!.Title);
     }
 
     [Fact]
