@@ -1,31 +1,31 @@
-; OpenClaw Companion Inno Setup Script (WinUI version)
+; 聚元灵创 Inno Setup Script (WinUI version)
 ; Pass /DDevBuild=1 to produce a side-by-side dev installer.
 #ifdef DevBuild
-  #define MyAppName "OpenClaw Companion (Dev)"
-  #define MyAppAumid "OpenClaw.Companion.Dev"
-  #define MyAppId "{{M0LTB0T-TRAY-4PP1-DEV}"
-  #define MyInstallDir "OpenClawTray-Dev"
-  #define MyMutex "OpenClawTray-Dev"
-  #define MyAutoStartName "OpenClawTray-Dev"
-  #define MyStartupTaskName "OpenClaw Companion (Dev)"
-  #define MyDistroName "OpenClawGateway-Dev"
-  #define MyProtocol "openclaw-dev"
+  #define MyAppName "聚元灵创 (Dev)"
+  #define MyAppAumid "Juyuan.Lingchuang.Dev"
+  #define MyAppId "{{1EBE3D92-C054-4D04-9B35-569B3CF61E31}"
+  #define MyInstallDir "JuyuanLingchuang-Dev"
+  #define MyMutex "JuyuanLingchuang-Dev"
+  #define MyAutoStartName "JuyuanLingchuang-Dev"
+  #define MyStartupTaskName "聚元灵创 (Dev)"
+  #define MyDistroName "JuyuanLingchuangGateway-Dev"
+  #define MyProtocol "juyuanlingchuang-dev"
   #define MyOutputSuffix "-Dev"
 #else
-  #define MyAppName "OpenClaw Companion"
-  #define MyAppAumid "OpenClaw.Companion"
-  #define MyAppId "{{M0LTB0T-TRAY-4PP1-D3N7}"
-  #define MyInstallDir "OpenClawTray"
-  #define MyMutex "OpenClawTray"
-  #define MyAutoStartName "OpenClawTray"
-  #define MyStartupTaskName "OpenClaw Companion"
-  #define MyDistroName "OpenClawGateway"
-  #define MyProtocol "openclaw"
+  #define MyAppName "聚元灵创"
+  #define MyAppAumid "Juyuan.Lingchuang"
+  #define MyAppId "{{7EF82E29-3929-41A4-ABCE-EF30314C0E8E}"
+  #define MyInstallDir "JuyuanLingchuang"
+  #define MyMutex "JuyuanLingchuang"
+  #define MyAutoStartName "JuyuanLingchuang"
+  #define MyStartupTaskName "聚元灵创"
+  #define MyDistroName "JuyuanLingchuangGateway"
+  #define MyProtocol "juyuanlingchuang"
   #define MyOutputSuffix ""
 #endif
-#define MyAppPublisher "OpenClaw Foundation"
-#define MyAppURL "https://github.com/openclaw/openclaw-windows-node"
-#define MyAppExeName "OpenClaw.Tray.WinUI.exe"
+#define MyAppPublisher "聚元灵创"
+#define MyAppURL "https://juyuanlingchuang.com"
+#define MyAppExeName "JuyuanLingchuang.exe"
 
 ; MyAppArch should be passed via /DMyAppArch=x64 or /DMyAppArch=arm64
 #ifndef MyAppArch
@@ -48,12 +48,12 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-AppSupportURL=https://github.com/openclaw/openclaw-windows-node/issues
-AppUpdatesURL=https://github.com/openclaw/openclaw-windows-node/releases
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
 DefaultDirName={localappdata}\{#MyInstallDir}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputBaseFilename=OpenClawCompanion{#MyOutputSuffix}-Setup-{#MyAppArch}
+OutputBaseFilename=JuyuanLingchuang{#MyOutputSuffix}-Setup-{#MyAppArch}
 Compression={#MyCompression}
 SolidCompression={#MySolidCompression}
 WizardStyle=modern
@@ -80,12 +80,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
   #define publish "publish"
 #endif
 
-#if !FileExists(publish + "\OpenClaw.Tray.WinUI.exe")
-  #error Tray payload missing. Publish OpenClaw.Tray.WinUI before compiling the installer.
+#if !FileExists(publish + "\JuyuanLingchuang.exe")
+  #error Tray payload missing. Publish JuyuanLingchuang before compiling the installer.
 #endif
 
 #if FileExists(publish + "\SetupEngine\OpenClaw.SetupEngine.UI.exe")
-  #error SetupEngine.UI.exe should not be shipped. Setup UI is hosted by OpenClaw.Tray.WinUI.exe.
+  #error SetupEngine.UI.exe should not be shipped. Setup UI is hosted by JuyuanLingchuang.exe.
 #endif
 
 ; vcRedist should point at the architecture-matching Visual C++ Runtime
@@ -108,17 +108,16 @@ Source: "{#vcRedist}"; DestDir: "{tmp}"; DestName: "vc_redist.exe"; Flags: delet
 #endif
 
 [Registry]
-Root: HKCU; Subkey: "Software\Classes\{#MyProtocol}"; ValueType: string; ValueName: ""; ValueData: "URL:OpenClaw Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\{#MyProtocol}"; ValueType: string; ValueName: ""; ValueData: "URL:聚元灵创协议"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\{#MyProtocol}"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\{#MyProtocol}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"",0"
 Root: HKCU; Subkey: "Software\Classes\{#MyProtocol}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
-Name: "{group}\OpenClaw Gateway Setup"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://setup"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
-Name: "{group}\OpenClaw Companion Settings"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://commandcenter"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
-Name: "{group}\OpenClaw Chat"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://chat"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
-Name: "{group}\Check for Updates"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://check-updates"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
+Name: "{group}\聚元灵创设置"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://commandcenter"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
+Name: "{group}\聚元灵创对话"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://chat"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
+Name: "{group}\检查更新"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#MyProtocol}://check-updates"; IconFilename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppAumid}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; AppUserModelID: "{#MyAppAumid}"
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon; AppUserModelID: "{#MyAppAumid}"
@@ -191,11 +190,12 @@ begin
   begin
     LocalGatewayCleanupRequested :=
       MsgBox(
-        'Do you also want to remove the OpenClaw local WSL gateway?' + #13#10#13#10 +
-        'Choose Yes to unregister the {#MyDistroName} WSL distro and remove generated local gateway state.' + #13#10 +
-        'Choose No to leave the local gateway and generated local state on this computer.',
+        '是否同时删除聚元灵创本地 WSL 网关？' + #13#10#13#10 +
+        '若你只用远程/平台网关（未在本机装过 WSL 网关），请选“否”。' + #13#10#13#10 +
+        '选择“是”将尝试注销 {#MyDistroName} WSL 发行版并清理本地网关状态。' + #13#10 +
+        '选择“否”将保留本机本地网关及生成状态，并直接继续卸载。',
         mbConfirmation,
-        MB_YESNO) = IDYES;
+        MB_YESNO or MB_DEFBUTTON2) = IDYES;
 
     if LocalGatewayCleanupRequested then
       Log('User chose to remove the local WSL gateway.')
@@ -259,42 +259,32 @@ end;
 procedure RunLocalGatewayCleanup;
 var
   ResultCode: Integer;
-  Retry: Boolean;
   Started: Boolean;
 begin
   if not LocalGatewayCleanupRequested then
     Exit;
 
   LocalGatewayCleanupSucceeded := False;
+  UninstallProgressForm.StatusLabel.Caption := '正在清理本地网关...';
+  Started := RunLocalGatewayCleanupOnce(ResultCode);
 
-  repeat
-    Retry := False;
-    UninstallProgressForm.StatusLabel.Caption := 'Removing local WSL gateway...';
-    Started := RunLocalGatewayCleanupOnce(ResultCode);
+  if Started and (ResultCode = 0) then
+  begin
+    LocalGatewayCleanupSucceeded := True;
+    Log('Local gateway cleanup completed successfully.');
+    Exit;
+  end;
 
-    if Started and (ResultCode = 0) then
-    begin
-      LocalGatewayCleanupSucceeded := True;
-      Log('Local gateway cleanup completed successfully.');
-      Exit;
-    end;
-
-    if UninstallSilent() then
-    begin
-      Log('Local gateway cleanup failed during silent uninstall; continuing without deleting generated state.');
-      Exit;
-    end;
-
-    Retry :=
-      MsgBox(
-        'OpenClaw could not remove the local WSL gateway.' + #13#10#13#10 +
-        'Exit code: ' + IntToStr(ResultCode) + #13#10#13#10 +
-        'Select Retry to try again, or Cancel to continue uninstalling OpenClaw and leave local gateway state on disk.',
-        mbError,
-        MB_RETRYCANCEL) = IDRETRY;
-  until not Retry;
-
-  Log('User continued uninstall after local gateway cleanup failed; generated state will be preserved.');
+  // Product clients often pair to a remote gateway and never create a local WSL
+  // distro. Do not block uninstall on cleanup failure; keep going and leave a log.
+  Log('Local gateway cleanup failed (exit ' + IntToStr(ResultCode) + '); continuing uninstall.');
+  if not UninstallSilent() then
+    MsgBox(
+      '本地 WSL 网关清理未完成（退出码: ' + IntToStr(ResultCode) + '）。' + #13#10#13#10 +
+      '这通常不影响卸载：本机可能从未安装本地网关，或 WSL 当前不可用。' + #13#10 +
+      '将继续卸载聚元灵创。',
+      mbInformation,
+      MB_OK);
 end;
 
 procedure DeleteGeneratedAppState;

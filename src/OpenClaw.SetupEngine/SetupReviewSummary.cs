@@ -14,7 +14,7 @@ public static class SetupReviewSummaryBuilder
 {
     public static SetupReviewSummary Build(SetupConfig config, string? dataDir = null, string? localDataDir = null)
     {
-        var distroName = Display(config.DistroName, "OpenClawGateway");
+        var distroName = Display(config.DistroName, "JuyuanLingchuangGateway");
         var baseDistro = Display(config.BaseDistro, "Ubuntu-24.04");
         var gatewayBind = Display(config.Gateway.Bind, "loopback");
         var gatewayPort = config.GatewayPort;

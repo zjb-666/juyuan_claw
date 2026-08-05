@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Builds and launches the WinUI tray app for local development.
 
@@ -175,7 +175,7 @@ $runtimeIdentifier = switch ($architecture) {
     default { "win-x64" }
 }
 $outputDir = Join-Path $repoRoot "src\OpenClaw.Tray.WinUI\bin\$Configuration\$targetFramework\$runtimeIdentifier"
-$exePath = Join-Path $outputDir "OpenClaw.Tray.WinUI.exe"
+$exePath = Join-Path $outputDir "JuyuanLingchuang.exe"
 $identityMarkerPath = Join-Path $outputDir "app-identity.txt"
 
 if (-not (Test-Path $outputDir)) {
@@ -231,7 +231,7 @@ try {
     }
 
     if ($UseWinApp) {
-        $winappArgs = @("run", $outputDir, "--manifest", $manifestPath, "--executable", "OpenClaw.Tray.WinUI.exe")
+        $winappArgs = @("run", $outputDir, "--manifest", $manifestPath, "--executable", "JuyuanLingchuang.exe")
         if (-not $NoDebugOutput) {
             $winappArgs += "--debug-output"
         }

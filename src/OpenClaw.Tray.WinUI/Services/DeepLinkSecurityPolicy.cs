@@ -81,7 +81,7 @@ internal static class DeepLinkSecurityPolicy
             "voice" or "voice-start" => "start voice input",
             "voice-stop" => "stop voice input",
             "ssh-restart" or "restart-ssh" or "restart-ssh-tunnel" => "restart the SSH tunnel",
-            _ => "run this OpenClaw action"
+            _ => "执行此聚元灵创操作"
         };
     }
 

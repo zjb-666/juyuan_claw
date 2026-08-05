@@ -10,7 +10,7 @@
             <Image Source="ms-appx:///OpenClaw.SetupEngine.UI/Assets/Setup/OpenClawMascot.png"
                    Width="44" Height="44" HorizontalAlignment="Center"
                    AutomationProperties.AccessibilityView="Raw" />
-            <TextBlock Text="OpenClaw onboard"
+            <TextBlock Text="聚元灵创引导"
                        Style="{StaticResource TitleTextBlockStyle}" HorizontalAlignment="Center" />
             <TextBlock x:Name="StatusText" Text="Connecting to gateway..."
                        Style="{StaticResource CaptionTextBlockStyle}"

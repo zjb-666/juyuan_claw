@@ -94,7 +94,7 @@ internal static class AppNotificationMapper
     }
 
     private static string NormalizeTitle(string? title) =>
-        string.IsNullOrWhiteSpace(title) ? "OpenClaw" : title.Trim();
+        string.IsNullOrWhiteSpace(title) ? "聚元灵创" : title.Trim();
 
     private static string NormalizeMessage(string? message, string title) =>
         string.IsNullOrWhiteSpace(message) ? title : message.Trim();

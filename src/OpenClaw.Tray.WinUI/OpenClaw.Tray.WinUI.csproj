@@ -8,13 +8,16 @@
     <Nullable>enable</Nullable>
     <EnableMsixTooling>true</EnableMsixTooling>
     <ApplicationIcon>Assets\openclaw.ico</ApplicationIcon>
-    <AssemblyTitle>OpenClaw Companion</AssemblyTitle>
-    <FileDescription>OpenClaw Companion</FileDescription>
-    <Product>OpenClaw Companion</Product>
+    <AssemblyName>JuyuanLingchuang</AssemblyName>
+    <AssemblyTitle>聚元灵创</AssemblyTitle>
+    <FileDescription>聚元灵创 Windows 智能助手</FileDescription>
+    <Product>聚元灵创</Product>
     <RootNamespace>OpenClawTray</RootNamespace>
     <DefaultLanguage>en-US</DefaultLanguage>
     <Platforms>x64;ARM64</Platforms>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <ProductApiBaseUrl Condition="'$(ProductApiBaseUrl)' == ''"></ProductApiBaseUrl>
+    <GeneratedProductConfigPath>$(IntermediateOutputPath)product-config.json</GeneratedProductConfigPath>
   </PropertyGroup>
 
   <!-- Dev build identity: allows side-by-side installation with Release.
@@ -22,9 +25,9 @@
   <PropertyGroup Condition="'$(DevBuild)' == 'true'">
     <DefineConstants>$(DefineConstants);DEV_BUILD</DefineConstants>
     <AppIdentityMarker>dev</AppIdentityMarker>
-    <AssemblyTitle>OpenClaw Companion (Dev)</AssemblyTitle>
-    <FileDescription>OpenClaw Companion (Dev)</FileDescription>
-    <Product>OpenClaw Companion (Dev)</Product>
+    <AssemblyTitle>聚元灵创 (Dev)</AssemblyTitle>
+    <FileDescription>聚元灵创 Windows 智能助手 (Dev)</FileDescription>
+    <Product>聚元灵创 (Dev)</Product>
   </PropertyGroup>
   <PropertyGroup Condition="'$(DevBuild)' != 'true'">
     <AppIdentityMarker>release</AppIdentityMarker>
@@ -93,6 +96,10 @@
 
   <ItemGroup>
     <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(GeneratedProductConfigPath)"
+          Link="product-config.json"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
     <None Include="..\OpenClaw.SetupEngine\default-config.json"
              Link="default-config.json"
              CopyToOutputDirectory="PreserveNewest" />
@@ -112,6 +119,14 @@
     <MxcSdkPackageJson>$(OpenClawRepoRoot)node_modules\@microsoft\mxc-sdk\package.json</MxcSdkPackageJson>
     <MxcSdkRestoreStamp>$(OpenClawRepoRoot)node_modules\.openclaw-mxc-sdk-$(MxcSdkExpectedVersion).stamp</MxcSdkRestoreStamp>
   </PropertyGroup>
+
+  <Target Name="GenerateProductConfig" BeforeTargets="PrepareForBuild">
+    <WriteLinesToFile
+      File="$(GeneratedProductConfigPath)"
+      Lines="{&quot;productApiBaseUrl&quot;:&quot;$(ProductApiBaseUrl)&quot;}"
+      Overwrite="true"
+      Encoding="UTF-8" />
+  </Target>
 
   <!-- Generate the versioned/channel-specific manifest under obj/. Never rewrite the
        tracked source manifest: a dev package build followed by a release build must not
@@ -209,9 +224,9 @@
       OutputManifestPath="$(_GeneratedAppxManifestPath)"
       FourPartVersion="$(_AppxManifestVersion)"
       DevBuild="$(DevBuild)"
-      IdentityName="OpenClaw.Companion.Dev"
-      DisplayName="OpenClaw Companion (Dev)"
-      ProtocolName="openclaw-dev" />
+      IdentityName="Juyuan.Lingchuang.Dev"
+      DisplayName="聚元灵创 (Dev)"
+      ProtocolName="juyuanlingchuang-dev" />
     <ItemGroup>
       <AppxManifest Remove="@(AppxManifest)" />
       <AppxManifest Include="$(_GeneratedAppxManifestPath)">

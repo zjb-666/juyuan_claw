@@ -4,7 +4,7 @@ namespace OpenClaw.Shared;
 
 public static class WindowsStartupTaskRegistration
 {
-    public const string TaskName = "OpenClaw Companion";
+    public const string TaskName = "聚元灵创";
 
     public static bool Register(string trayExecutablePath, string taskName = TaskName)
     {

@@ -564,7 +564,7 @@ internal sealed class OpenTelemetryOtlpProbeSink : IOpenTelemetryProbeSink
             ExporterProbeLogEvent,
             CreateProbeLogAttributes(options),
             null,
-            static (_, _) => "OpenClaw telemetry exporter probe log sent.");
+            static (_, _) => "聚元灵创遥测导出探测日志已发送。");
     }
 
     public void SendConnectionState(OpenTelemetryConnectionState state)
@@ -584,7 +584,7 @@ internal sealed class OpenTelemetryOtlpProbeSink : IOpenTelemetryProbeSink
             ConnectionStateLogEvent,
             attributes,
             null,
-            static (_, _) => "OpenClaw gateway connection state changed.");
+            static (_, _) => "聚元灵创网关连接状态已变更。");
     }
 
     public void SendNodeToolCompletion(NodeToolTelemetryCompletion completion)
@@ -597,7 +597,7 @@ internal sealed class OpenTelemetryOtlpProbeSink : IOpenTelemetryProbeSink
             NodeToolCompletionLogEvent,
             CreateNodeToolLogAttributes(completion),
             null,
-            static (_, _) => "OpenClaw node tool invocation did not succeed.");
+            static (_, _) => "聚元灵创节点工具调用未成功。");
     }
 
     public bool ForceFlush(int timeoutMilliseconds)

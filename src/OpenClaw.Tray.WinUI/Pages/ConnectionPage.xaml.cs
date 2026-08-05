@@ -248,6 +248,18 @@ public sealed partial class ConnectionPage : Page
 
     private void UpdateLocalWslSetupVisibility()
     {
+        if (ProductBillingGate.IsLocked)
+        {
+            WelcomeLocalWslSetupCard.Visibility = Visibility.Collapsed;
+            AddLocalWslItem.Visibility = Visibility.Collapsed;
+            if (AddLocalWslItem.IsSelected)
+            {
+                AddDirectItem.IsSelected = true;
+                ShowAddPane("direct");
+            }
+            return;
+        }
+
         var localSetupAvailable = !WslKeepAlivePolicy.HasSetupManagedLocalGateway(_gatewayRegistry?.GetAll());
         var localSetupVisibility = localSetupAvailable
             ? Visibility.Visible
@@ -753,6 +765,9 @@ public sealed partial class ConnectionPage : Page
                          || plan.OperatorCard == OperatorCardState.Idle;
         OperatorSessionsLink.IsEnabled = linksEnabled;
         OperatorInstancesLink.IsEnabled = linksEnabled;
+        OperatorInstancesLink.Visibility = ProductBillingGate.IsLocked
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         OperatorSection.Opacity = linksEnabled ? 1.0 : 0.65;
 
         // Status sub-row (mirrors PermissionsPage NodeStatusDot pattern):
@@ -1147,12 +1162,12 @@ public sealed partial class ConnectionPage : Page
             {
                 "Confirm Tailscale is running and signed in on this Windows PC.",
                 "Confirm this PC and the generated WSL gateway belong to the same tailnet.",
-                "Open the managed WSL gateway terminal as root and check tailscaled, Tailscale Serve, and the OpenClaw gateway service. Funnel is unsupported; remove any Funnel route. Companion keeps using WSS and never falls back to localhost.",
+                "Open the managed WSL gateway terminal as root and check tailscaled, Tailscale Serve, and the 聚元灵创 gateway service. Funnel is unsupported; remove any Funnel route. Companion keeps using WSS and never falls back to localhost.",
             },
             RecoveryCategory.LocalPortConflict => new[]
             {
                 "Another process is listening on the managed WSL gateway's local address.",
-                "OpenClaw automatically removes only a fully verified obsolete OpenClaw gateway. Unknown processes are never stopped.",
+                "聚元灵创只会自动移除已完整验证的过时网关。未知进程绝不会被停止。",
                 "Stop the conflicting app or run Reconfigure… to choose a different gateway address, then retry.",
             },
             _ => new[]

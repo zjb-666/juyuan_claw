@@ -189,6 +189,9 @@ public sealed partial class ChatPage : Page
     {
         if (CurrentApp.Settings is null) return;
 
+        // Product LAN gateways are often ws://host:port (not loopback / not wss).
+        // Legacy WebView chat refuses those URLs ("网页聊天不可用"), so keep native
+        // Reactor chat and rely on history caps below to avoid LayoutCycle crashes.
         var decision = ChatSurfaceResolver.Resolve(
             ChatSurfaceTarget.HubChat,
             CurrentApp.Settings.UseLegacyWebChat,
@@ -288,20 +291,32 @@ public sealed partial class ChatPage : Page
 
         PlaceholderPanel.Visibility = Visibility.Collapsed;
         ChatHost.Visibility = Visibility.Visible;
-        _reactorHost = CurrentApp.ActiveHubWindow!.MountReactorChat(
-            ChatHost,
-            provider,
-            initialThreadId: threadIdToMount,
-            onReadAloud: readAloud,
-            onStopSpeaking: () => app?.StopChatSpeaking(),
-            onVoiceRequest: VoiceTranscribeAsync,
-            onAttachClick: OnAttachClicked,
-            onSettingsClick: () => _hub?.NavigateTo("voice"),
-            onSpeakerMuteChanged: muted => _ = OnSpeakerMuteChangedAsync(muted),
-            initialMuted: ShouldStartSpeakerMuted(CurrentApp.Settings));
-        _mountedProvider = provider;
-        _mountedThreadId = threadIdToMount;
-        UpdateNativeChatSurfaceActive();
+        try
+        {
+            _reactorHost = CurrentApp.ActiveHubWindow!.MountReactorChat(
+                ChatHost,
+                provider,
+                initialThreadId: threadIdToMount,
+                onReadAloud: readAloud,
+                onStopSpeaking: () => app?.StopChatSpeaking(),
+                onVoiceRequest: VoiceTranscribeAsync,
+                onAttachClick: OnAttachClicked,
+                onSettingsClick: () => _hub?.NavigateTo("voice"),
+                onSpeakerMuteChanged: muted => _ = OnSpeakerMuteChangedAsync(muted),
+                initialMuted: ShouldStartSpeakerMuted(CurrentApp.Settings));
+            _mountedProvider = provider;
+            _mountedThreadId = threadIdToMount;
+            UpdateNativeChatSurfaceActive();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ChatPage] MountReactorChat failed: {ex}");
+            DisposeReactorHost();
+            PlaceholderPanel.Visibility = Visibility.Visible;
+            ChatHost.Visibility = Visibility.Collapsed;
+            UpdateNativeChatSurfaceActive();
+            return;
+        }
 
         // If the V hotkey (or another caller) requested auto-start voice,
         // trigger it after the UI thread processes the mount (composer needs

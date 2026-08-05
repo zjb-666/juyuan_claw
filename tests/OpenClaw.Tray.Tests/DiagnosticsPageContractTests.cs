@@ -498,8 +498,10 @@ public sealed class DiagnosticsPageContractTests
         Assert.DoesNotContain("Translation=\"0,-1,0\"", xaml);
         Assert.Contains("IsPaneToggleButtonVisible=\"False\"", xaml);
         Assert.Contains("x:Name=\"NavContentHost\"", xaml);
-        Assert.Contains("x:Name=\"NavContentClip\"", xaml);
-        Assert.Contains("SizeChanged=\"OnNavContentHostSizeChanged\"", xaml);
+        // Do not reintroduce NavContentClip: a 0×0 RectangleGeometry clip blanks the
+        // entire hub content area (title bar only) until a later SizeChanged.
+        Assert.DoesNotContain("x:Name=\"NavContentClip\"", xaml);
+        Assert.DoesNotContain("SizeChanged=\"OnNavContentHostSizeChanged\"", xaml);
         Assert.DoesNotContain("x:Name=\"TitleContentDivider\"", xaml);
 
         var titleBarIndex = xaml.IndexOf("x:Name=\"AppTitleBar\"", StringComparison.Ordinal);
@@ -530,8 +532,8 @@ public sealed class DiagnosticsPageContractTests
         Assert.Contains("NavView.IsPaneOpen = !NavView.IsPaneOpen;", cs);
         Assert.Contains("private void OnBrandTogglePointerEntered", cs);
         Assert.Contains("private void OnBrandTogglePointerExited", cs);
-        Assert.Contains("private void OnNavContentHostSizeChanged", cs);
-        Assert.Contains("NavContentClip.Rect = new global::Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height);", cs);
+        Assert.DoesNotContain("private void OnNavContentHostSizeChanged", cs);
+        Assert.DoesNotContain("NavContentClip.Rect", cs);
     }
 
     [Fact]

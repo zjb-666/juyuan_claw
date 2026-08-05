@@ -74,7 +74,7 @@ public sealed partial class ChatWindow : WindowEx
         _token = token;
         _chatUrl = ChatSurfaceResolver.BuildChatUrl(gatewayUrl, token);
         InitializeComponent();
-        Title = AppIdentity.DecorateWindowTitle("OpenClaw Chat");
+        Title = AppIdentity.DecorateWindowTitle("聚元灵创聊天");
 
         this.SetWindowSize(DefaultChatWidth, DefaultChatHeight);
         this.SetIcon("Assets\\openclaw.ico");
@@ -132,8 +132,16 @@ public sealed partial class ChatWindow : WindowEx
         OpenClawTray.Chat.DebugChatSurfaceOverrides.Changed -= OnDebugOverrideChanged;
         OpenClawTray.Chat.DebugChatSurfaceOverrides.Changed += OnDebugOverrideChanged;
 
-        ApplyChatSurface();
         ApplySystemBackdrop();
+
+        // Pre-warm must stay hidden. Creating a WindowEx and mounting Reactor
+        // immediately used to flash a blank white panel and load full history
+        // before first tray click (InvalidCast / layout failures).
+        AppWindow.IsShownInSwitchers = false;
+        PlaceholderPanel.Visibility = Visibility.Visible;
+        ChatHost.Visibility = Visibility.Collapsed;
+        WebView.Visibility = Visibility.Collapsed;
+        this.Hide();
     }
 
     private const int DefaultChatWidth = 480;

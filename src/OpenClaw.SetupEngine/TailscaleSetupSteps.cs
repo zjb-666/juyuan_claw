@@ -324,7 +324,7 @@ public sealed class InstallTailscaleStep : SetupStep
         set -eu
         . /etc/os-release
         if [ "$ID" != "ubuntu" ] || [ "$VERSION_ID" != "24.04" ] || [ "$VERSION_CODENAME" != "noble" ]; then
-            echo "OpenClaw's generated Tailscale gateway requires Ubuntu 24.04 (noble); found $ID $VERSION_ID $VERSION_CODENAME" >&2
+            echo "聚元灵创生成的 Tailscale 网关需要 Ubuntu 24.04 (noble)；当前为 $ID $VERSION_ID $VERSION_CODENAME" >&2
             exit 1
         fi
         install -d -m 0755 /usr/share/keyrings
@@ -492,7 +492,7 @@ public sealed class AuthorizeTailscaleStep : SetupStep
     {
         var presenter = ctx.ExternalAuthorizationPresenter ?? new ConsoleExternalAuthorizationPresenter();
         await presenter.PresentAsync(
-            new ExternalAuthorizationRequest("Tailscale", authorizationUrl, "Authorize the generated OpenClaw gateway in your Tailscale tailnet:"),
+            new ExternalAuthorizationRequest("Tailscale", authorizationUrl, "Authorize the generated 聚元灵创网关 in your Tailscale tailnet:"),
             ct);
     }
 

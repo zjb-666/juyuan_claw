@@ -8,34 +8,34 @@ internal static class AppIdentity
 {
 #if DEV_BUILD
     /// <summary>Human-visible app name shown in tray tooltips, window titles, and notifications.</summary>
-    public const string DisplayName = "OpenClaw Companion (Dev)";
+    public const string DisplayName = "聚元灵创 (Dev)";
 
     /// <summary>Short name used in tray tooltip prefix.</summary>
-    public const string TrayName = "OpenClaw Tray (Dev)";
+    public const string TrayName = "聚元灵创 (Dev)";
 
     /// <summary>MSIX package identity name (must differ from release for side-by-side).</summary>
-    public const string PackageIdentityName = "OpenClaw.Companion.Dev";
+    public const string PackageIdentityName = "Juyuan.Lingchuang.Dev";
 
     /// <summary>Win32 AppUserModelID used for notifications and shell grouping.</summary>
     public const string AppUserModelId = PackageIdentityName;
 
     /// <summary>Windows Registry auto-start value name (must differ so both can auto-start).</summary>
-    public const string AutoStartRegistryName = "OpenClawTray-Dev";
+    public const string AutoStartRegistryName = "JuyuanLingchuang-Dev";
 
     /// <summary>Windows scheduled task name (must differ so both can auto-start).</summary>
-    public const string StartupTaskName = "OpenClaw Companion (Dev)";
+    public const string StartupTaskName = "聚元灵创 (Dev)";
 
     /// <summary>Leaf directory for local and roaming app-owned data.</summary>
-    public const string DataDirectoryName = "OpenClawTray-Dev";
+    public const string DataDirectoryName = "JuyuanLingchuang-Dev";
 
     /// <summary>Single-instance mutex base name.</summary>
-    public const string MutexBaseName = "OpenClawTray-Dev";
+    public const string MutexBaseName = "JuyuanLingchuang-Dev";
 
     /// <summary>Protocol scheme for deep links.</summary>
-    public const string ProtocolScheme = "openclaw-dev";
+    public const string ProtocolScheme = "juyuanlingchuang-dev";
 
     /// <summary>App-owned WSL distro used by embedded setup.</summary>
-    public const string SetupDistroName = "OpenClawGateway-Dev";
+    public const string SetupDistroName = "JuyuanLingchuangGateway-Dev";
 
     /// <summary>Loopback gateway port used by embedded setup.</summary>
     public const int SetupGatewayPort = 18790;
@@ -47,34 +47,34 @@ internal static class AppIdentity
     public static bool IsDev => true;
 #else
     /// <summary>Human-visible app name shown in tray tooltips, window titles, and notifications.</summary>
-    public const string DisplayName = "OpenClaw Companion";
+    public const string DisplayName = "聚元灵创";
 
     /// <summary>Short name used in tray tooltip prefix.</summary>
-    public const string TrayName = "OpenClaw Tray";
+    public const string TrayName = "聚元灵创";
 
     /// <summary>MSIX package identity name.</summary>
-    public const string PackageIdentityName = "OpenClaw.Companion";
+    public const string PackageIdentityName = "Juyuan.Lingchuang";
 
     /// <summary>Win32 AppUserModelID used for notifications and shell grouping.</summary>
     public const string AppUserModelId = PackageIdentityName;
 
     /// <summary>Windows Registry auto-start value name.</summary>
-    public const string AutoStartRegistryName = "OpenClawTray";
+    public const string AutoStartRegistryName = "JuyuanLingchuang";
 
-    /// <summary>Windows scheduled task name.</summary>
-    public const string StartupTaskName = "OpenClaw Companion";
+    /// <summary>Windows scheduled task name (must differ so both can auto-start).</summary>
+    public const string StartupTaskName = "聚元灵创";
 
     /// <summary>Leaf directory for local and roaming app-owned data.</summary>
-    public const string DataDirectoryName = "OpenClawTray";
+    public const string DataDirectoryName = "JuyuanLingchuang";
 
     /// <summary>Single-instance mutex base name.</summary>
-    public const string MutexBaseName = "OpenClawTray";
+    public const string MutexBaseName = "JuyuanLingchuang";
 
     /// <summary>Protocol scheme for deep links.</summary>
-    public const string ProtocolScheme = "openclaw";
+    public const string ProtocolScheme = "juyuanlingchuang";
 
     /// <summary>App-owned WSL distro used by embedded setup.</summary>
-    public const string SetupDistroName = "OpenClawGateway";
+    public const string SetupDistroName = "JuyuanLingchuangGateway";
 
     /// <summary>Loopback gateway port used by embedded setup.</summary>
     public const int SetupGatewayPort = 18789;

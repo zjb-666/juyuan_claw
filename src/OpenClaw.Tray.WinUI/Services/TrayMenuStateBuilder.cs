@@ -88,7 +88,7 @@ internal sealed class TrayMenuStateBuilder
                 },
                 new TextBlock
                 {
-                    Text = "OpenClaw",
+                    Text = "聚元灵创",
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                     FontSize = 18,
                     VerticalAlignment = VerticalAlignment.Center,
@@ -1488,7 +1488,7 @@ internal sealed class TrayMenuStateBuilder
         };
 
         AddPermToggle(items, "Windows node", FluentIconCatalog.System,
-            "Run OpenClaw as a local node on this PC",
+            "在本机以本地节点方式运行聚元灵创",
             () => settings.EnableNodeMode, v => settings.EnableNodeMode = v);
         AddPermToggle(items, "System tools", FluentIconCatalog.Terminal,
             "Let agents run shell commands and scripts on this PC",

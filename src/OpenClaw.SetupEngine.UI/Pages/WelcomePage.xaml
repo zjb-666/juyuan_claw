@@ -12,14 +12,14 @@
                    Source="ms-appx:///OpenClaw.SetupEngine.UI/Assets/Setup/OpenClawMascot.png"
                    Width="96" Height="96" HorizontalAlignment="Center"
                    AutomationProperties.AccessibilityView="Raw" />
-            <TextBlock Text="Set up OpenClaw"
+            <TextBlock Text="Set up 聚元灵创"
                        Style="{StaticResource TitleTextBlockStyle}"
                        HorizontalAlignment="Center" />
             <TextBlock TextWrapping="Wrap" TextAlignment="Center" MaxWidth="460"
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        HorizontalAlignment="Center"
-                       Text="OpenClaw runs your agent through a gateway. Choose how to set it up on this PC. You can change this later." />
+                       Text="聚元灵创运行 your agent through a gateway. Choose how to set it up on this PC. You can change this later." />
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" Margin="0,24,0,0"
@@ -64,7 +64,7 @@
                             <TextBlock TextWrapping="Wrap"
                                        Style="{StaticResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Text="A private, self-hosted OpenClaw gateway in an isolated Ubuntu WSL instance. We'll show exactly what gets installed before anything runs." />
+                                       Text="A private, self-hosted 聚元灵创网关 in an isolated Ubuntu WSL instance. We'll show exactly what gets installed before anything runs." />
                         </StackPanel>
                     </Grid>
                 </ListViewItem>
@@ -87,7 +87,7 @@
                             <TextBlock TextWrapping="Wrap"
                                        Style="{StaticResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Text="Already run an OpenClaw gateway: here, on another machine, or remote? Pair without installing anything." />
+                                       Text="Already run an 聚元灵创网关: here, on another machine, or remote? Pair without installing anything." />
                         </StackPanel>
                     </Grid>
                 </ListViewItem>

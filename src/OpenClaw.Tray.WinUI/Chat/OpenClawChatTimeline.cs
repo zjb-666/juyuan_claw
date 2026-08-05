@@ -45,7 +45,7 @@ public record OpenClawChatTimelineProps(
     Action? OnLoadMoreHistory,
     IReadOnlyDictionary<string, ChatEntryMetadata>? EntryMetadata = null,
     long TimelineGeneration = 0,
-    string UserSenderLabel = "OpenClaw Windows Tray",
+    string UserSenderLabel = "聚元灵创",
     string AssistantSenderLabel = "Field",
     string? DefaultModel = null,
     string? DefaultUsageSummary = null,
@@ -578,15 +578,9 @@ public class OpenClawChatTimeline : Component<OpenClawChatTimelineProps>
         // fine for the entry counts we deal with (typically <100 visible).
         var hoveredEntries = UseState<HashSet<string>>(new HashSet<string>(), threadSafe: true);
 
-        // Thinking-bubble dot animation. Cycles 0→1→2→3→0 every 400ms while the
-        // ShowThinkingIndicator prop is true; drives the trailing "." / ".." /
-        // "..." in the "<name> is thinking" text so the bubble visibly pulses
-        // without needing a ProgressRing (which renders awkwardly at small
-        // sizes). DispatcherTimer fires on the UI thread so the reducer call
-        // is safe. UseReducer (not UseState) because the timer-tick closure
-        // re-reads on each fire — UseState.Value is a render-time snapshot,
-        // so a long-lived timer would forever advance from the same stale
-        // value. (Same reason as the AckAction reducer below.)
+        // Thinking-bubble dot animation. Cycles 0→1→2→3→0 while ShowThinkingIndicator
+        // is true. Keep the interval coarse: FunctionalUI remounts the timeline on
+        // each tick, and a stuck thinking state plus frequent remounts freezes input.
         var (thinkingDotPhase, thinkingDotPhaseUpdate) = UseReducer<int>(0, threadSafe: true);
         UseEffect((Func<Action>)(() =>
         {
@@ -594,9 +588,14 @@ public class OpenClawChatTimeline : Component<OpenClawChatTimelineProps>
                 return () => { };
             var timer = new Microsoft.UI.Xaml.DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(400)
+                Interval = TimeSpan.FromMilliseconds(2000)
             };
-            timer.Tick += (_, _) => thinkingDotPhaseUpdate(prev => (prev + 1) % 4);
+            timer.Tick += (_, _) =>
+            {
+                if (!Props.ShowThinkingIndicator)
+                    return;
+                thinkingDotPhaseUpdate(prev => (prev + 1) % 4);
+            };
             timer.Start();
             return () => timer.Stop();
         }), Props.ShowThinkingIndicator);

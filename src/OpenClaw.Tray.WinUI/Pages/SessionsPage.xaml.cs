@@ -72,14 +72,14 @@ public sealed partial class SessionsPage : Page
                     Key = "agent:main:main",
                     IsMain = true,
                     Status = "active",
-                    DisplayName = "OpenClaw Windows Tray",
+                    DisplayName = "聚元灵创",
                     UpdatedAt = DateTime.UtcNow,
                 },
                 new SessionInfo
                 {
                     Key = "agent:main:fork",
                     Status = "active",
-                    DisplayName = "OpenClaw Windows Tray",
+                    DisplayName = "聚元灵创",
                     UpdatedAt = DateTime.UtcNow.AddSeconds(-1),
                 },
             ]);

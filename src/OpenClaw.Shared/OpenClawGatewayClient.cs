@@ -15,7 +15,7 @@ namespace OpenClaw.Shared;
 public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatewayClient
 {
     private const string OperatorClientId = "cli";
-    private const string OperatorClientDisplayName = "OpenClaw Windows Tray";
+    private const string OperatorClientDisplayName = "聚元灵创";
     private const string OperatorClientMode = "cli";
     private const string OperatorRole = "operator";
     private static readonly Regex s_pairingRequestIdRegex = new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", RegexOptions.Compiled);
@@ -610,6 +610,12 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
             if (string.IsNullOrEmpty(text)) continue;
             if (string.IsNullOrEmpty(role)) continue;
             if (ChatMessageInfo.IsSilentAssistantDirective(role, text)) continue;
+            if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) &&
+                ChatMessageInfo.IsHeartbeatAckToSuppress(text))
+                continue;
+            if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) &&
+                ChatMessageInfo.IsHeartbeatPollUserPrompt(text))
+                continue;
 
             var (inputTokens, outputTokens, responseTokens, contextPercent) = ExtractChatUsage(m);
             list.Add(new ChatMessageInfo
@@ -3426,6 +3432,12 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
         long? compactionTokensAfter = null)
     {
         if (ChatMessageInfo.IsSilentAssistantDirective(role, text))
+            return;
+        if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) &&
+            ChatMessageInfo.IsHeartbeatAckToSuppress(text))
+            return;
+        if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) &&
+            ChatMessageInfo.IsHeartbeatPollUserPrompt(text))
             return;
 
         try

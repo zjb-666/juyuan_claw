@@ -18,6 +18,7 @@ using OpenClaw.Connection;
 using Microsoft.Extensions.DependencyInjection;
 using OpenClawTray.Presentation;
 using OpenClawTray.Presentation.Adapters;
+using OpenClawTray.Product;
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
@@ -43,16 +44,23 @@ namespace OpenClawTray;
 
 public partial class App : Application, OpenClawTray.Services.IAppCommands
 {
-    internal static readonly UpdatumManager AppUpdater = new("openclaw", "openclaw-windows-node")
+    // Keep as runtime-readable (not const) so the gated update paths stay compilable
+    // while product auto-update remains intentionally disabled.
+    private static readonly bool ProductUpdatesEnabled = false;
+
+    // Product builds must never consume upstream Companion releases because they omit
+    // the platform authorization gate. Enable only after a signed product update feed exists.
+    internal static readonly UpdatumManager AppUpdater = new("disabled", "disabled")
     {
         FetchOnlyLatestRelease = true,
-        InstallUpdateSingleFileExecutableName = "OpenClaw.Tray.WinUI",
+        InstallUpdateSingleFileExecutableName = "JuyuanLingchuang",
     };
 
     private TrayIcon? _trayIcon;
     private TrayIconCoordinator? _trayIconCoordinator;
     private GatewayConnectionManager? _connectionManager;
     private GatewayRegistry? _gatewayRegistry;
+    private ProductLoginWindow? _productLoginWindow;
     private OpenClawTray.Services.ManagedLocalGatewayAutoRepairMonitor? _managedLocalAutoRepairMonitor;
     private ManagedLocalGatewayPortProvenanceService? _managedLocalPortProvenance;
     private OpenClawTray.Chat.OpenClawChatCoordinator? _chatCoordinator;
@@ -374,6 +382,8 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
     {
         _crashLogger.Log("UnhandledException", e.Exception);
         e.Handled = true; // Try to prevent crash
+        // Do not Exit() on LayoutCycleException: product login/chat can hit a transient
+        // layout cycle while still usable; forcing quit made the app "exit right after login".
     }
 
     /// <summary>
@@ -692,7 +702,8 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         // Check for updates before launching. Skip in test instances — no UI dialogs,
         // no network calls, no startup delay.
-        if (DataDirOverride is null &&
+        if (ProductUpdatesEnabled &&
+            DataDirOverride is null &&
             Environment.GetEnvironmentVariable("OPENCLAW_SKIP_UPDATE_CHECK") != "1")
         {
             var shouldLaunch = await _updateCoordinator.CheckForUpdatesAsync();
@@ -709,20 +720,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         _sshTunnelService = new SshTunnelService(new AppLogger());
         _sshTunnelService.TunnelExited += OnSshTunnelExited;
 
-        // Initialize tray icon FIRST (window-less pattern from WinUIEx).
-        // The tray is application chrome and must always survive any failure
-        // in the onboarding wizard. OnLaunched delegates through a guarded
-        // async boundary so onboarding failures are logged instead of escaping
-        // before the tray ever initializes.
-        InitializeTrayIcon();
-        ShowSurfaceImprovementsTipIfNeeded();
-
-        // Build the DI composition root AFTER the tray is up, so additive plumbing
-        // can never delay or preempt tray initialization. It only needs the
-        // dispatcher + settings (created above) and failures are non-fatal.
-        InitializeServiceProvider();
-
-        // Initialize connection manager before setup flow.
+        // Initialize connection manager before the product authorization gate.
         _gatewayRegistry = new GatewayRegistry(SettingsManager.SettingsDirectoryPath, logger: new AppLogger());
         _gatewayRegistry.Load();
         var credentialResolver = new CredentialResolver(DeviceIdentityFileReader.Instance);
@@ -801,17 +799,50 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         _connectionManager.OperatorClientChanged += OnOperatorClientChanged;
         _connectionManager.StateChanged += OnManagerStateChanged;
 
+        bool productAuthorized;
+        try
+        {
+            productAuthorized = await ShowProductLoginAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Product login could not start: {ex}");
+            ShowTransientConnectionError(ex.Message);
+            productAuthorized = false;
+        }
+
+        if (!productAuthorized)
+        {
+            Exit();
+            return;
+        }
+
+        // Only expose the product shell after platform authorization succeeds.
+        InitializeTrayIcon();
+        // Open Hub immediately so the user is not left with only a tray icon
+        // (left-click previously opened quick-chat and blanked the shell).
+        ShowHub("connection");
+        ShowSurfaceImprovementsTipIfNeeded();
+        InitializeServiceProvider();
+
         // First-run check (also supports forced onboarding for testing).
         // Wrapped in try/catch so a wizard construction failure cannot tear
         // down the tray; user can retry via the Setup Guide menu item.
+        // Platform-managed Gateways already have juyuancloud billing locked —
+        // never run the local provider/API-key wizard on product builds.
         var setupShownDuringStartup = false;
         try
         {
-            if ((!_isPostSetupRestart && RequiresSetup(_settings)) ||
-                Environment.GetEnvironmentVariable("OPENCLAW_FORCE_ONBOARDING") == "1")
+            var forceOnboarding = Environment.GetEnvironmentVariable("OPENCLAW_FORCE_ONBOARDING") == "1";
+            if (!ProductBillingGate.IsLocked &&
+                ((!_isPostSetupRestart && RequiresSetup(_settings)) || forceOnboarding))
             {
                 await ShowOnboardingAsync();
                 setupShownDuringStartup = true;
+            }
+            else if (ProductBillingGate.IsLocked && forceOnboarding)
+            {
+                Logger.Warn("Ignoring OPENCLAW_FORCE_ONBOARDING: product billing lock owns Gateway LLM config.");
             }
         }
         catch (DeviceIdentityLoadException ex)
@@ -898,14 +929,16 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         InitializeGatewayClient();
 
-        // Pre-warm chat window (WebView2 init takes 1-3s, do it now so left-click is instant)
-        if (_settings != null &&
+        // Product builds skip chat pre-warm. Creating ChatWindow at startup still
+        // raced Reactor history load and left a blank Hub after UI exceptions.
+        if (!ProductBillingGate.IsLocked &&
+            _settings != null &&
             TryResolveChatCredentials(out var prewarmUrl, out var prewarmToken, out _, out var prewarmIsBootstrapToken) &&
             !prewarmIsBootstrapToken)
         {
             _chatWindow = new ChatWindow(prewarmUrl, prewarmToken);
             ApplyThemePreference(_chatWindow);
-            // Window is created but hidden — WebView2 initializes in the background
+            _chatWindow.HideNearTray();
         }
 
         // Start deep link server
@@ -934,6 +967,34 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         }
 
         Logger.Info("Application started (WinUI 3)");
+    }
+
+    private Task<bool> ShowProductLoginAsync()
+    {
+        if (_connectionManager is null || _gatewayRegistry is null)
+        {
+            return Task.FromResult(false);
+        }
+
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var config = ProductConfig.Load();
+        var window = _productLoginWindow = new ProductLoginWindow(
+            config,
+            _connectionManager,
+            _gatewayRegistry);
+        window.Provisioned += (_, _) => completion.TrySetResult(true);
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_productLoginWindow, window))
+            {
+                _productLoginWindow = null;
+            }
+            completion.TrySetResult(false);
+        };
+        ApplyThemePreference(window);
+        window.CenterOnScreen();
+        window.Activate();
+        return completion.Task;
     }
 
     private void InitializeKeepAliveWindow()
@@ -1002,6 +1063,14 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
     private void OnTrayIconSelected(TrayIcon sender, TrayIconEventArgs e)
     {
+        // Product builds: open the Hub Connection page. Quick-chat mounts Reactor
+        // + full gateway history and has been blanking Hub after InvalidCast.
+        if (ProductBillingGate.IsLocked)
+        {
+            ShowHub("connection");
+            return;
+        }
+
         if (_connectionManager?.CurrentSnapshot.OperatorState == RoleConnectionState.Connected)
         {
             ShowChatWindow();
@@ -1235,7 +1304,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
             case "history": ShowHub("channels"); break;
             case "activity": ShowHub("channels"); break;
             case "healthcheck": _ = RunHealthCheckAsync(userInitiated: true); break;
-            case "checkupdates": _ = _updateCoordinator!.CheckForUpdatesUserInitiatedAsync(); break;
+            case "checkupdates": CheckForProductUpdates(); break;
             case "settings": ShowSettings(); break;
             case "setup": _ = ShowOnboardingAsync(); break;
             case "autostart": ToggleAutoStart(); break;
@@ -1467,7 +1536,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         var dialog = new ContentDialog
         {
-            Title = "Confirm OpenClaw action",
+            Title = "确认聚元灵创操作",
             Content = $"A deep link wants to {DeepLinkSecurityPolicy.GetActionDisplayName(result)}.",
             PrimaryButtonText = "Allow",
             CloseButtonText = "Cancel",
@@ -2932,7 +3001,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         try
         {
             var builder = new ToastContentBuilder()
-                .AddText(notification.Title ?? "OpenClaw")
+                .AddText(notification.Title ?? AppIdentity.DisplayName)
                 .AddText(notification.Message);
 
             var logoPath = GetNotificationIcon(notification.Type);
@@ -3869,6 +3938,12 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
     private async Task ShowOnboardingAsync()
     {
+        if (ProductBillingGate.IsLocked)
+        {
+            Logger.Warn("Local Gateway onboarding is disabled: platform owns LLM billing configuration.");
+            ShowHub("connection");
+            return;
+        }
         await EnsureSetupWindowAsync();
     }
 
@@ -3905,7 +3980,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
                     _startupArgs,
                     IsDeepLinkArg,
                     Environment.ProcessId));
-            setupWindow.Title = AppIdentity.DecorateWindowTitle("OpenClaw Setup");
+            setupWindow.Title = AppIdentity.DecorateWindowTitle("聚元灵创设置");
             _setupWindow = setupWindow;
             setupWindow.AdvancedSetupRequested += OnSetupAdvancedSetupRequested;
             setupWindow.SetupCompleted += OnSetupCompleted;
@@ -3932,6 +4007,13 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
     private async Task ShowGatewayWizardAsync()
     {
+        if (ProductBillingGate.IsLocked)
+        {
+            Logger.Warn("Gateway wizard is disabled: platform owns LLM billing configuration.");
+            ShowHub("connection");
+            return;
+        }
+
         var (setupWindow, createdNew) = await EnsureSetupWindowAsync(startAtGatewayInstalledMilestone: true);
         if (setupWindow == null)
             return;
@@ -3965,7 +4047,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         var exePath = ResolveCurrentExecutablePath();
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
         {
-            await ShowSetupRestartErrorAsync("OpenClaw setup finished, but the tray executable could not be found for restart.");
+            await ShowSetupRestartErrorAsync("聚元灵创设置已完成，但找不到托盘程序，无法自动重启。");
             return;
         }
 
@@ -4005,7 +4087,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
         catch (Exception ex)
         {
             Logger.Error($"Failed to restart tray after setup: {ex}");
-            await ShowSetupRestartErrorAsync("OpenClaw setup finished, but restarting the tray failed. The current tray will keep running; please exit and reopen OpenClaw.");
+            await ShowSetupRestartErrorAsync("聚元灵创设置已完成，但重启托盘失败。当前托盘将继续运行；请退出后重新打开聚元灵创。");
         }
     }
 
@@ -4019,7 +4101,7 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
 
         var dialog = new ContentDialog
         {
-            Title = "Restart OpenClaw",
+            Title = "重启聚元灵创",
             Content = message,
             CloseButtonText = "OK",
             XamlRoot = root.XamlRoot,
@@ -4152,7 +4234,19 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
     }
     void IAppCommands.ShowVoiceOverlay() => ShowHub("voice");
     void IAppCommands.ShowChat() => ShowChatWindow();
-    void IAppCommands.CheckForUpdates() => _ = _updateCoordinator!.CheckForUpdatesUserInitiatedAsync();
+    void IAppCommands.CheckForUpdates() => CheckForProductUpdates();
+
+    private void CheckForProductUpdates()
+    {
+        if (ProductUpdatesEnabled)
+        {
+            _ = _updateCoordinator!.CheckForUpdatesUserInitiatedAsync();
+            return;
+        }
+
+        ShowTransientConnectionError("当前版本暂不支持自动更新，请联系聚元灵创管理员获取新版安装包。");
+    }
+
     void IAppCommands.ShowOnboarding() => _ = ShowOnboardingAsync();
     void IAppCommands.ShowGatewayWizard() => _ = ShowGatewayWizardAsync();
     void IAppCommands.ShowConnectionStatus() => ShowConnectionStatusWindow();
@@ -4470,7 +4564,11 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands
             OpenSettings = ShowSettings,
             OpenSetup = () => _ = ShowOnboardingAsync(),
             RunHealthCheck = () => RunHealthCheckAsync(userInitiated: true),
-            CheckForUpdates = _updateCoordinator!.CheckForUpdatesUserInitiatedAsync,
+            CheckForUpdates = () =>
+            {
+                CheckForProductUpdates();
+                return Task.CompletedTask;
+            },
             OpenLogFile = OpenLogFile,
             OpenLogFolder = OpenLogFolder,
             OpenConfigFolder = OpenConfigFolder,

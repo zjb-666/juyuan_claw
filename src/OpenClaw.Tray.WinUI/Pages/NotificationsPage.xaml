@@ -22,7 +22,7 @@
                                AutomationProperties.AutomationId="NotificationsPageMarker"
                                Style="{StaticResource TitleTextBlockStyle}"/>
                     <TextBlock x:Uid="NotificationsPage_Subtitle"
-                               Text="Review and clear active OpenClaw notifications."
+                               Text="查看并清除当前聚元灵创通知。"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>

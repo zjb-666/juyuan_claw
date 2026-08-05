@@ -135,7 +135,7 @@ public sealed class GatewayDiscoveryService : IDisposable
                 {
                     ct.ThrowIfCancellationRequested();
                     var response = await http.GetStringAsync($"http://127.0.0.1:{port}/", ct);
-                    // Match the gateway's specific HTML title — not generic "OpenClaw" which matches MCP too
+                    // Match the gateway's specific HTML title — not generic "聚元灵创" which matches MCP too
                     if (response.Contains("<title>OpenClaw Control</title>", StringComparison.OrdinalIgnoreCase))
                     {
                         return new DiscoveredGateway

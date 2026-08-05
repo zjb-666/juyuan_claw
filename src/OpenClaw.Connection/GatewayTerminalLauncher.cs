@@ -63,7 +63,7 @@ public static class GatewayTerminalLaunchCommandBuilder
                 new ReadOnlyCollection<string>([
                     "new-tab",
                     "--title",
-                    $"OpenClaw doctor ({distroName})",
+                    $"聚元灵创 doctor ({distroName})",
                     "wsl.exe",
                     "-d",
                     distroName,
@@ -98,7 +98,7 @@ public static class GatewayTerminalLaunchCommandBuilder
                 new ReadOnlyCollection<string>([
                     "new-tab",
                     "--title",
-                    $"OpenClaw Gateway ({distroName})",
+                    $"聚元灵创网关 ({distroName})",
                     "wsl.exe",
                     "-d",
                     distroName
@@ -125,7 +125,7 @@ public static class GatewayTerminalLaunchCommandBuilder
                 new ReadOnlyCollection<string>([
                     "new-tab",
                     "--title",
-                    $"OpenClaw SSH Gateway ({host})",
+                    $"聚元灵创 SSH 网关 ({host})",
                     "ssh.exe",
                     endpoint
                 ]),

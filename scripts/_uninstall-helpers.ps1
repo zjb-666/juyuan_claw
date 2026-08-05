@@ -19,7 +19,7 @@
 function Test-IsOpenClawOwnedDistroName {
     param([string]$Name)
 
-    return $Name -eq "OpenClawGateway"
+    return $Name -eq "JuyuanLingchuangGateway" -or $Name -eq "OpenClawGateway"
 }
 
 # ---------------------------------------------------------------------------

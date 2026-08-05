@@ -33,7 +33,7 @@ public sealed partial class CompletePage : Page
                 StartupRow.Visibility = args.ShowStartupPreference ? Visibility.Visible : Visibility.Collapsed;
                 GatewaySummaryText.Text = (args.ReviewSummary ?? SetupReviewSummaryBuilder.Build(new SetupConfig())).CompletionGatewaySummary;
                 TitleText.Text = "All set!";
-                SubtitleText.Text = "OpenClaw is ready to go";
+                SubtitleText.Text = "聚元灵创已就绪 to go";
                 ErrorCard.Visibility = Visibility.Collapsed;
                 HelpLink.Visibility = Visibility.Collapsed;
                 SummaryPanel.Visibility = Visibility.Visible;

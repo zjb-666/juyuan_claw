@@ -241,7 +241,7 @@
                         <TextBlock x:Uid="SandboxPage_Files" Text="📁 Files" Style="{StaticResource BodyStrongTextBlockStyle}"/>
                     </Expander.Header>
                     <StackPanel Spacing="12" Padding="4">
-                        <TextBlock x:Uid="SandboxPage_ByDefaultTheAgent" Text="By default the agent only has a temporary workspace folder it can read and write. Grant access to user folders below. SSH keys, browser profiles, and OpenClaw's own settings are always blocked."
+                        <TextBlock x:Uid="SandboxPage_ByDefaultTheAgent" Text="By default the agent only has a temporary workspace folder it can read and write. Grant access to user folders below. SSH keys, browser profiles, and 聚元灵创's own settings are always blocked."
                                    TextWrapping="Wrap"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 

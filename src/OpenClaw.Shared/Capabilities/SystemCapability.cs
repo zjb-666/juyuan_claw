@@ -114,7 +114,7 @@ public class SystemCapability : NodeCapabilityBase
     
     private Task<NodeInvokeResponse> HandleNotifyAsync(NodeInvokeRequest request)
     {
-        var title = GetStringArg(request.Args, "title", "OpenClaw");
+            var title = GetStringArg(request.Args, "title", "聚元灵创");
         var body = GetStringArg(request.Args, "body", "");
         var subtitle = GetStringArg(request.Args, "subtitle");
         var sound = GetBoolArg(request.Args, "sound", true);
@@ -124,7 +124,7 @@ public class SystemCapability : NodeCapabilityBase
         // Raise event for UI to handle
         NotifyRequested?.Invoke(this, new SystemNotifyArgs
         {
-            Title = title ?? "OpenClaw",
+                Title = title ?? "聚元灵创",
             Body = body ?? "",
             Subtitle = subtitle,
             PlaySound = sound

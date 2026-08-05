@@ -26,7 +26,7 @@ public static class DeepLinkHandler
 
             var uriSchemeKey = $@"SOFTWARE\Classes\{AppIdentity.ProtocolScheme}";
             using var key = Registry.CurrentUser.CreateSubKey(uriSchemeKey);
-            key?.SetValue("", "URL:OpenClaw Protocol");
+            key?.SetValue("", "URL:聚元灵创协议");
             key?.SetValue("URL Protocol", "");
 
             using var iconKey = key?.CreateSubKey("DefaultIcon");

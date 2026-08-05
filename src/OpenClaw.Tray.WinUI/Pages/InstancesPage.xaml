@@ -17,7 +17,7 @@
                                AutomationProperties.AutomationId="InstancesPageMarker"
                                Style="{StaticResource TitleTextBlockStyle}"/>
                     <TextBlock x:Uid="InstancesPage_Subtitle"
-                               Text="Latest presence beacons from OpenClaw nodes."
+                               Text="来自聚元灵创节点的最新在线信标。"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                TextWrapping="Wrap"/>

@@ -301,7 +301,7 @@ public sealed class OpenClawChatRoot : Component
                 AgentId = snapshot.ComposeTarget.AgentId,
                 Title = _pendingSelectedThreadId is not null
                     ? LocalizationHelper.GetString("Chat_PendingNewSessionTitle")
-                    : lastState?.ThreadTitle ?? "OpenClaw Windows Tray",
+                    : lastState?.ThreadTitle ?? "聚元灵创",
                 Model = lastState?.Model,
                 ModelProvider = lastState?.ModelProvider,
                 Status = ChatThreadStatus.Running,
@@ -507,7 +507,7 @@ public sealed class OpenClawChatRoot : Component
             OnLoadMoreHistory: null,
             EntryMetadata: entryMeta,
             TimelineGeneration: timelineGeneration,
-            UserSenderLabel: "OpenClaw Windows Tray",
+            UserSenderLabel: "聚元灵创",
             AssistantSenderLabel: assistantSenderLabel,
             DefaultModel: effectiveThread?.Model,
             DefaultUsageSummary: usageSummary,
@@ -560,7 +560,7 @@ public sealed class OpenClawChatRoot : Component
             var agentLabel = agentId.Length > 0 ? char.ToUpperInvariant(agentId[0]) + agentId[1..] : "Main";
             var syntheticGroup = new ChannelGroup(
                 AgentLabel: agentLabel,
-                Sessions: new[] { (Id: effectiveThread.Id!, Title: effectiveThread.Title ?? "OpenClaw Windows Tray", Model: effectiveThread.Model, ModelProvider: effectiveThread.ModelProvider) });
+                Sessions: new[] { (Id: effectiveThread.Id!, Title: effectiveThread.Title ?? "聚元灵创", Model: effectiveThread.Model, ModelProvider: effectiveThread.ModelProvider) });
 
             var augmented = new ChannelGroup[channelGroups.Length + 1];
             augmented[0] = syntheticGroup;
@@ -572,7 +572,7 @@ public sealed class OpenClawChatRoot : Component
             ? Component<OpenClawComposer, OpenClawComposerProps>(new(
                 ConnectionState: connState,
                 TurnActive: turnActiveOverride,
-                ChannelLabel: composerThread.Title ?? "OpenClaw Windows Tray",
+                ChannelLabel: composerThread.Title ?? "聚元灵创",
                 ChannelId: composerThread.Id!,
                 AvailableChannels: channelGroups,
                 AvailableModels: snapshot.AvailableModels,
@@ -633,17 +633,33 @@ public sealed class OpenClawChatRoot : Component
                 AvailableCommands: snapshot.AvailableCommands,
                 CommandsSupported: snapshot.CommandsSupported,
                 OnCommandsRequested: () => RunFireAndForget(ct => _provider.EnsureCommandCatalogAsync(ct)),
+#if !OPENCLAW_TRAY_TESTS
+                // Product: never feed SizeChanged → AvailableHeight → remount.
+                // That loop LayoutCycleExceptions after the first streamed reply.
+                AvailableHeight: ProductBillingGate.IsLocked ? null : chatSurfaceHeight.Value))
+#else
                 AvailableHeight: chatSurfaceHeight.Value))
+#endif
             : (bodyIsSkeleton ? RenderSkeletonComposer() : Empty());
 
         var divider = Empty();
         // Composer absorbs the old StatusBar.
         void SetChatSurfaceHeight(double height)
         {
+#if !OPENCLAW_TRAY_TESTS
+            if (ProductBillingGate.IsLocked)
+                return;
+#endif
             if (double.IsNaN(height) || double.IsInfinity(height) || height <= 0)
                 return;
 
-            chatSurfaceHeight.Set(Math.Round(height));
+            var rounded = Math.Round(height);
+            // Skip no-op updates: SizeChanged → Set → remeasure → SizeChanged can
+            // otherwise feed LayoutCycleException after product login/chat open.
+            if (chatSurfaceHeight.Value is double current && Math.Abs(current - rounded) < 0.5)
+                return;
+
+            chatSurfaceHeight.Set(rounded);
         }
 
         // Copilot-style scrim: instead of a hard divider line, the timeline
@@ -687,8 +703,21 @@ public sealed class OpenClawChatRoot : Component
             composer.Grid(row: 3, column: 0)
         ).OnMount(root =>
         {
-            SetChatSurfaceHeight(root.ActualHeight);
-            root.SizeChanged += (_, e) => SetChatSurfaceHeight(e.NewSize.Height);
+            void ApplyHeight(double height)
+            {
+                if (root.DispatcherQueue is null || root.DispatcherQueue.HasThreadAccess)
+                {
+                    SetChatSurfaceHeight(height);
+                    return;
+                }
+
+                root.DispatcherQueue.TryEnqueue(
+                    Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                    () => SetChatSurfaceHeight(height));
+            }
+
+            ApplyHeight(root.ActualHeight);
+            root.SizeChanged += (_, e) => ApplyHeight(e.NewSize.Height);
         });
     }
 
@@ -793,7 +822,7 @@ public sealed class OpenClawChatRoot : Component
     {
         var isConnected = string.Equals(connectionState, "connected", StringComparison.Ordinal);
         var msg = isConnected
-            ? "Start a new OpenClaw chat from the composer below."
+            ? "从下方输入框开始新的聚元灵创对话。"
             : LocalizationHelper.GetString("Chat_Root_ConnectingToGateway");
 
         return Border(

@@ -2946,6 +2946,9 @@
   <data name="Chat_Composer_Tooltip_Stop" xml:space="preserve">
     <value>停止</value>
   </data>
+  <data name="Chat_Composer_Tooltip_Settings" xml:space="preserve">
+    <value>设置</value>
+  </data>
   <data name="Chat_Composer_AssistantWorking" xml:space="preserve">
     <value>助手正在工作…</value>
   </data>

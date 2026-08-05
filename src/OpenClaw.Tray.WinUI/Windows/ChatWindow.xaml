@@ -4,7 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:winex="using:WinUIEx"
-    Title="OpenClaw Chat">
+    Title="聚元灵创聊天">
 
     <!-- SystemBackdrop is set in code-behind. Do NOT set it here in XAML —
          the XAML value would override the code-behind set on first paint. -->

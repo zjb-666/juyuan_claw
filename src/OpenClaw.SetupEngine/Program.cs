@@ -38,7 +38,7 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        Console.WriteLine("OpenClaw Setup Engine v0.1");
+        Console.WriteLine("聚元灵创安装引擎 v0.1");
         Console.WriteLine("─────────────────────────────");
 
         if (!TryParseArguments(args, out var parsedArguments, out var argumentError))
@@ -66,7 +66,7 @@ public static class Program
         var tailscaleTrustAuth = parsedArguments.HasFlag("--tailscale-trust-auth");
         var tailscaleAuth = parsedArguments.GetValue("--tailscale-auth");
         var tailscaleHostname = parsedArguments.GetValue("--tailscale-hostname");
-        var autoStartName = parsedArguments.GetValue("--autostart-name") ?? "OpenClawTray";
+        var autoStartName = parsedArguments.GetValue("--autostart-name") ?? "JuyuanLingchuang";
         var startupTaskName = parsedArguments.GetValue("--startup-task-name") ?? WindowsStartupTaskRegistration.TaskName;
 
         // Load config

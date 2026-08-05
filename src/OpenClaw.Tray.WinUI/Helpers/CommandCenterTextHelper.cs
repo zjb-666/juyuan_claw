@@ -27,7 +27,7 @@ internal static class CommandCenterTextHelper
     internal static string BuildSupportContext(GatewayCommandCenterState state)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw Windows Tray Support Context");
+        builder.AppendLine("聚元灵创支持上下文");
         builder.AppendLine($"Generated: {DateTimeOffset.Now:O}");
         builder.AppendLine($"Connection: {state.ConnectionStatus}");
         builder.AppendLine($"Topology: {state.Topology.DisplayName}");
@@ -81,7 +81,7 @@ internal static class CommandCenterTextHelper
     internal static string BuildDebugBundle(GatewayCommandCenterState state)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw Windows Tray Debug Bundle");
+        builder.AppendLine("聚元灵创调试信息");
         builder.AppendLine($"Generated: {DateTimeOffset.Now:O}");
         builder.AppendLine();
         AppendSection(builder, "Support Context", BuildSupportContext(state));
@@ -125,7 +125,7 @@ internal static class CommandCenterTextHelper
 
         var lines = new List<string>
         {
-            "OpenClaw browser proxy setup",
+            "聚元灵创浏览器代理设置",
             $"Expected local browser-control endpoint: http://127.0.0.1:{portText}/",
             "",
             "If the Gateway and browser are on this Windows machine:",
@@ -136,7 +136,7 @@ internal static class CommandCenterTextHelper
             "   openclaw browser --browser-profile openclaw tabs",
             "",
             "If the browser is on this Windows machine but the Gateway is remote:",
-            "1. Run a browser-capable OpenClaw node host on this machine:",
+            "1. 在本机运行具备浏览器能力的聚元灵创节点：",
             $"   openclaw node run --host {gatewayHost} --port {gatewayPortText}",
             "2. Or install it as a user service:",
             $"   openclaw node install --host {gatewayHost} --port {gatewayPortText}",
@@ -175,7 +175,7 @@ internal static class CommandCenterTextHelper
     internal static string BuildExtensibilitySummary(IReadOnlyCollection<ChannelCommandCenterInfo> channels)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw extensibility surfaces");
+        builder.AppendLine("聚元灵创扩展面");
         builder.AppendLine("Channels dashboard: channels");
         builder.AppendLine("Skills dashboard: skills");
         builder.AppendLine("Cron / schedules dashboard: cron");
@@ -192,7 +192,7 @@ internal static class CommandCenterTextHelper
     internal static string BuildCapabilityDiagnosticsSummary(GatewayCommandCenterState state)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw capability diagnostics");
+        builder.AppendLine("聚元灵创能力诊断");
         builder.AppendLine($"Generated: {DateTimeOffset.Now:O}");
         builder.AppendLine();
         builder.AppendLine("Windows permission surfaces:");
@@ -253,7 +253,7 @@ internal static class CommandCenterTextHelper
             return "No local port diagnostics available for the current topology.";
 
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw port diagnostics");
+        builder.AppendLine("聚元灵创端口诊断");
         builder.AppendLine($"Generated: {DateTimeOffset.Now:O}");
         foreach (var port in ports.OrderBy(p => p.Port).ThenBy(p => p.Purpose, StringComparer.OrdinalIgnoreCase))
         {
@@ -273,10 +273,10 @@ internal static class CommandCenterTextHelper
     internal static string BuildActivitySummary(IReadOnlyCollection<CommandCenterActivityInfo> activity)
     {
         if (activity.Count == 0)
-            return "No recent OpenClaw tray activity.";
+            return "最近没有聚元灵创托盘活动。";
 
         var builder = new StringBuilder();
-        builder.AppendLine("Recent OpenClaw tray activity");
+        builder.AppendLine("最近的聚元灵创托盘活动");
         foreach (var item in activity)
         {
             var details = BuildActivityDetail(item);
@@ -292,7 +292,7 @@ internal static class CommandCenterTextHelper
             return "No nodes reported by gateway.";
 
         var builder = new StringBuilder();
-        builder.AppendLine("OpenClaw node inventory");
+        builder.AppendLine("聚元灵创节点清单");
         builder.AppendLine($"Generated: {DateTimeOffset.Now:O}");
         builder.AppendLine();
         foreach (var node in nodes.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase))

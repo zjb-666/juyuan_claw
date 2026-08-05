@@ -247,18 +247,18 @@ public class OpenClawChatDataProviderTests
             Action? historyFailureReservedForTesting = null)
     {
         var bridge = new FakeBridge { Sessions = initial ?? Array.Empty<SessionInfo>() };
-        var provider = toolMetaCachePath is null && attachmentMetaCachePath is null && lastChatStatePath is null &&
-            lastChatStateSaveDelay is null && historyRetryScheduler is null && historyFailureReservedForTesting is null
-            ? new OpenClawChatDataProvider(bridge)
-            : new OpenClawChatDataProvider(
-                bridge,
-                post: null,
-                toolMetaCacheFilePath: toolMetaCachePath ?? Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "tool-metadata.json"),
-                attachmentMetaCacheFilePath: attachmentMetaCachePath,
-                lastChatStateFilePath: lastChatStatePath,
-                lastChatStateSaveDelay: lastChatStateSaveDelay,
-                historyRetryScheduler: historyRetryScheduler,
-                historyFailureReservedForTesting: historyFailureReservedForTesting);
+        // Unit tests exercise generic Gateway catalog behavior; product billing
+        // lock is covered by ProductPlatformBillingTests + focused Hub gates.
+        var provider = new OpenClawChatDataProvider(
+            bridge,
+            post: null,
+            toolMetaCacheFilePath: toolMetaCachePath ?? Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "tool-metadata.json"),
+            attachmentMetaCacheFilePath: attachmentMetaCachePath,
+            lastChatStateFilePath: lastChatStatePath,
+            lastChatStateSaveDelay: lastChatStateSaveDelay,
+            historyRetryScheduler: historyRetryScheduler,
+            historyFailureReservedForTesting: historyFailureReservedForTesting,
+            lockPlatformBilling: false);
         var snapshots = new List<ChatDataSnapshot>();
         var notifications = new List<ChatProviderNotification>();
         provider.Changed += (_, e) => snapshots.Add(e.Snapshot);
@@ -2327,6 +2327,83 @@ public class OpenClawChatDataProviderTests
     }
 
     [Fact]
+    public async Task ChatMessageReceived_SameTextStreamingStubAfterLifecycleEnd_DoesNotDuplicateAssistant()
+    {
+        var (bridge, provider, _, _) = CreateProvider(new[] { MainSession() });
+        await provider.LoadAsync();
+
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"start"}""", runId: "run-1"));
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "assistant",
+            Text = "抱歉，刚才那次回复被中断了。",
+            State = "delta"
+        });
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-1"));
+
+        // Gateway re-runs the same stub as a non-final frame (and often starts a
+        // second lifecycle). Same text must not create a second bubble.
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"start"}""", runId: "run-2"));
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "assistant",
+            Text = "抱歉，刚才那次回复被中断了。",
+            State = "delta"
+        });
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-2"));
+
+        var timeline = (await provider.LoadAsync()).Timelines["main"];
+        var assistants = timeline.Entries.Where(e => e.Kind == ChatTimelineItemKind.Assistant).ToList();
+        Assert.Single(assistants);
+        Assert.Equal("抱歉，刚才那次回复被中断了。", assistants[0].Text);
+    }
+
+    [Fact]
+    public async Task ChatMessageReceived_SameAssistantTextAcrossDuplicateUserEcho_DoesNotDuplicateAssistant()
+    {
+        var (bridge, provider, _, _) = CreateProvider(new[] { MainSession() });
+        await provider.LoadAsync();
+
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "user",
+            Text = "hello",
+            State = "final"
+        });
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "assistant",
+            Text = "same stub",
+            State = "delta"
+        });
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-1"));
+
+        // Second agent turn re-emits the same user echo before the same assistant.
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "user",
+            Text = "hello",
+            State = "final"
+        });
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "assistant",
+            Text = "same stub",
+            State = "delta"
+        });
+
+        var timeline = (await provider.LoadAsync()).Timelines["main"];
+        Assert.Single(timeline.Entries, e => e.Kind == ChatTimelineItemKind.Assistant);
+        Assert.Equal(2, timeline.Entries.Count(e => e.Kind == ChatTimelineItemKind.User));
+    }
+
+    [Fact]
     public async Task ChatMessageReceived_DeltaAfterFinalAssistant_DoesNotReactivateTurn()
     {
         var (bridge, provider, _, notifications) = CreateProvider(new[] { MainSession() });
@@ -2511,8 +2588,9 @@ public class OpenClawChatDataProviderTests
 
         var afterMeta = provider.GetEntryMetadata("main");
         Assert.Contains(users, user =>
-            afterMeta[user.Id].IsLocalQueuedSend &&
-            afterMeta[user.Id].OpenClawSeq is null);
+            !string.IsNullOrEmpty(afterMeta[user.Id].LocalQueuedMessageId) &&
+            afterMeta[user.Id].OpenClawSeq is null &&
+            afterMeta[user.Id].GatewayMessageId is null);
         Assert.Contains(users, user =>
             afterMeta[user.Id].GatewayMessageId == "remote-later" &&
             afterMeta[user.Id].OpenClawSeq == 50 &&
@@ -2799,6 +2877,59 @@ public class OpenClawChatDataProviderTests
             .Select(e => e.Text)
             .ToArray();
         Assert.Equal(new[] { "a", "b" }, userTexts);
+    }
+
+    [Fact]
+    public async Task LoadHistoryAsync_CollapsesIdLessLocalEchoWhenHistoryHasSameFreshUser()
+    {
+        var (bridge, provider, snapshots, _) = CreateProvider(new[] { MainSession() });
+        await provider.LoadAsync();
+
+        bridge.SendResults.Enqueue(new ChatSendResult { RunId = "run-fresh", Status = "started" });
+        await provider.SendMessageAsync("main", "飞书连接后能不能执行");
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"start"}""", runId: "run-fresh"));
+        // Id-less echo confirms local send without gateway identity.
+        bridge.RaiseChat(new ChatMessageInfo
+        {
+            SessionKey = "main",
+            Role = "user",
+            Text = "飞书连接后能不能执行",
+            State = "final"
+        });
+
+        var before = Assert.Single(
+            snapshots[^1].Timelines["main"].Entries,
+            e => e.Kind == ChatTimelineItemKind.User);
+        Assert.False(provider.GetEntryMetadata("main")[before.Id].IsLocalQueuedSend);
+        Assert.NotNull(provider.GetEntryMetadata("main")[before.Id].LocalQueuedMessageId);
+
+        // Finish the live run before history reload. LoadHistory preserves
+        // TurnActive while _activeRunIds still owns the thread.
+        bridge.RaiseAgent(MakeAgentEvent("lifecycle", """{"phase":"end"}""", runId: "run-fresh"));
+
+        bridge.HistoryBehavior = _ => Task.FromResult(new ChatHistoryInfo
+        {
+            SessionKey = "main",
+            Messages =
+            [
+                new ChatMessageInfo
+                {
+                    SessionKey = "main",
+                    Role = "user",
+                    Text = "飞书连接后能不能执行",
+                    Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    OpenClawSeq = 11
+                },
+            ]
+        });
+        snapshots.Clear();
+
+        await provider.LoadHistoryAsync("main");
+
+        Assert.Single(
+            snapshots[^1].Timelines["main"].Entries,
+            e => e.Kind == ChatTimelineItemKind.User && e.Text == "飞书连接后能不能执行");
+        Assert.False(snapshots[^1].Timelines["main"].TurnActive);
     }
 
     [Fact]
@@ -6192,6 +6323,33 @@ public class OpenClawChatDataProviderTests
         Assert.Equal(
             new[] { "gpt-5.4", "claude-sonnet-4.6", "ollama-only-id" },
             snapshots[^1].AvailableModels);
+    }
+
+    [Fact]
+    public async Task ModelsListUpdated_WhenPlatformBillingLocked_FiltersToAllowlist()
+    {
+        var bridge = new FakeBridge { Sessions = new[] { MainSession() } };
+        await using var provider = new OpenClawChatDataProvider(
+            bridge,
+            post: null,
+            toolMetaCacheFilePath: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "tool-metadata.json"),
+            lockPlatformBilling: true);
+        var snapshots = new List<ChatDataSnapshot>();
+        provider.Changed += (_, e) => snapshots.Add(e.Snapshot);
+        await provider.LoadAsync();
+        snapshots.Clear();
+
+        bridge.RaiseModels(new ModelsListInfo
+        {
+            Models = new List<ModelInfo>
+            {
+                new() { Id = "gpt-5.4", Name = "GPT-5.4" },
+                new() { Id = "qwen3_6_plus", Name = "qwen3.6-plus" },
+                new() { Id = "glm_5", Name = "glm_5" },
+            }
+        });
+
+        Assert.Equal(new[] { "qwen3_6_plus", "glm_5" }, snapshots[^1].AvailableModels);
     }
 
     [Fact]

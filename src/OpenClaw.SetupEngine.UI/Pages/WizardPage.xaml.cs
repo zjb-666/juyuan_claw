@@ -72,7 +72,7 @@ public sealed partial class WizardPage : Page
 
         if (SetupPreview.RequestedPage == "wizard-error")
         {
-            TitleText.Text = "OpenClaw onboard hit a problem";
+            TitleText.Text = "聚元灵创引导 hit a problem";
             ShowError("The gateway restarted before the current wizard step finished. Your setup is still installed; choose Start wizard again, or use More options to restart onboard or skip and exit.");
             return;
         }
@@ -1446,7 +1446,7 @@ public sealed partial class WizardPage : Page
 
         if (!contextResult.IsSuccess)
         {
-            ShowFinalizationError($"OpenClaw onboard finished, but Windows node guidance could not be installed: {contextResult.Message}");
+            ShowFinalizationError($"聚元灵创引导 finished, but Windows node guidance could not be installed: {contextResult.Message}");
             return;
         }
 

@@ -5,7 +5,7 @@ namespace OpenClaw.SetupEngine;
 [SupportedOSPlatform("windows")]
 public static class TrayExecutableResolver
 {
-    private const string TrayExecutableName = "OpenClaw.Tray.WinUI.exe";
+    private const string TrayExecutableName = "JuyuanLingchuang.exe";
 
     public static string? Resolve(string? setupEngineBaseDirectory = null)
     {

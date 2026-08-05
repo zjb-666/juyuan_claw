@@ -20,7 +20,7 @@ namespace OpenClaw.SetupEngine.UI;
 /// </summary>
 internal sealed class WizardConsoleTail : IDisposable
 {
-    private const string DefaultDistroName = "OpenClawGateway";
+    private const string DefaultDistroName = "JuyuanLingchuangGateway";
     private const string LogGlob = "/tmp/openclaw/openclaw-*.log";
     private static readonly Regex s_ansiEscapeRegex = new(
         @"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_].*?\x1B\\|[@-Z\\-_])",

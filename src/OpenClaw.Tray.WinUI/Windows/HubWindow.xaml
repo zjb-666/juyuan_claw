@@ -5,8 +5,11 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:OpenClawTray.Controls"
     xmlns:winex="using:WinUIEx"
-    Title="OpenClaw"
-    MinWidth="1000" MinHeight="400">
+    Title="聚元灵创"
+    MinWidth="900" MinHeight="560"
+    IsMaximizable="True"
+    IsResizable="True"
+    IsMinimizable="True">
 
     <Window.SystemBackdrop>
         <MicaBackdrop/>
@@ -60,7 +63,7 @@
                 </Grid>
             </Button>
 
-            <TextBlock x:Uid="TitleText" Grid.Column="1" x:Name="TitleText" Text="OpenClaw Windows Companion"
+            <TextBlock x:Uid="TitleText" Grid.Column="1" x:Name="TitleText" Text="聚元灵创"
                         FontSize="13" VerticalAlignment="Center"
                         Margin="8,0,0,0"
                         Style="{StaticResource CaptionTextBlockStyle}"/>
@@ -114,6 +117,20 @@
             </StackPanel>
 
             <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+
+                <Border x:Name="ComputeBalancePill"
+                        Height="30"
+                        Padding="11,0"
+                        CornerRadius="15"
+                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                        VerticalAlignment="Center"
+                        Visibility="Collapsed"
+                        ToolTipService.ToolTip="平台算力余额（与网页钱包同源）">
+                    <TextBlock x:Name="ComputeBalanceText"
+                               Text="算力 —"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               VerticalAlignment="Center"/>
+                </Border>
 
                 <Button x:Name="StatusPillButton"
                         Height="30"
@@ -364,11 +381,7 @@
 
         <!-- Main Content -->
         <Grid x:Name="NavContentHost"
-              Grid.Row="1"
-              SizeChanged="OnNavContentHostSizeChanged">
-            <Grid.Clip>
-                <RectangleGeometry x:Name="NavContentClip"/>
-            </Grid.Clip>
+              Grid.Row="1">
 
             <NavigationView
                 x:Uid="HubWindow_MainNavigation"
@@ -460,7 +473,7 @@
                     <NavigationViewItem x:Uid="HubWindow_NavigationViewItem_115" Tag="bindings" Content="Bindings">
                         <NavigationViewItem.Icon><ImageIcon Source="{StaticResource Bindings_Icon}" AutomationProperties.AccessibilityView="Raw"/></NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem x:Uid="HubWindow_NavigationViewItem_118" Tag="config" Content="Config">
+                    <NavigationViewItem x:Uid="HubWindow_NavigationViewItem_118" x:Name="NavConfig" Tag="config" Content="Config">
                         <NavigationViewItem.Icon><ImageIcon Source="{StaticResource Config_Icon}" AutomationProperties.AccessibilityView="Raw"/></NavigationViewItem.Icon>
                     </NavigationViewItem>
                     <NavigationViewItem x:Uid="HubWindow_NavigationViewItem_121" Tag="usage" Content="Usage">

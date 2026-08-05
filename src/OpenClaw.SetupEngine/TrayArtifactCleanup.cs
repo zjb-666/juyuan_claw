@@ -14,7 +14,7 @@ namespace OpenClaw.SetupEngine;
 public static class TrayArtifactCleanup
 {
     private const string AutoStartKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-    private const string DefaultAutoStartValue = "OpenClawTray";
+    private const string DefaultAutoStartValue = "JuyuanLingchuang";
 
     public static void Run(
         SetupContext ctx,

@@ -186,7 +186,7 @@ public sealed partial class TrayMenuWindow : WindowEx
         _ownerMenu = ownerMenu;
 
         InitializeComponent();
-        Title = AppIdentity.DecorateWindowTitle("OpenClaw Menu");
+        Title = AppIdentity.DecorateWindowTitle("聚元灵创菜单");
 
         // Configure as popup-style window
         this.IsMaximizable = false;
@@ -1032,7 +1032,16 @@ public sealed partial class TrayMenuWindow : WindowEx
         RootGrid.InvalidateArrange();
         MenuPanel.InvalidateMeasure();
         MenuPanel.InvalidateArrange();
-        RootGrid.UpdateLayout();
+        try
+        {
+            RootGrid.UpdateLayout();
+        }
+        catch (Exception ex)
+        {
+            // After a chat layout failure the XAML tree can reject UpdateLayout
+            // (HRESULT 0x88000FA8). Skip sizing this tick; next open can recover.
+            OpenClawTray.Services.Logger.Warn($"[TrayMenu] UpdateLayout skipped: {ex.Message}");
+        }
     }
 
     private bool TryGetCurrentMonitorMetrics(out int workAreaHeight, out uint dpi)

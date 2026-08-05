@@ -46,7 +46,7 @@
                         <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                             <TextBlock x:Uid="SettingsRow_AutoStart_Header" Text="Start with Windows" Style="{StaticResource BodyTextBlockStyle}"/>
                             <TextBlock x:Uid="SettingsRow_AutoStart_Description"
-                                       Text="Launch OpenClaw automatically when you sign in."
+                                       Text="登录 Windows 时自动启动聚元灵创。"
                                        Style="{StaticResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                        TextWrapping="Wrap"/>
@@ -366,10 +366,10 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                            <TextBlock x:Uid="SettingsPage_OnboardWizard_Header"
-                                      Text="OpenClaw Onboard"
+                                      Text="聚元灵创引导"
                                       Style="{StaticResource BodyTextBlockStyle}"/>
                            <TextBlock x:Uid="SettingsPage_OnboardWizard_Description"
-                                      Text="Open the OpenClaw onboarding on an installed Local Gateway. Skips WSL installation and jumps straight to configuration."
+                                      Text="在已安装的本地网关上打开聚元灵创引导。跳过 WSL 安装，直接进入配置。"
                                       Style="{StaticResource CaptionTextBlockStyle}"
                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                       TextWrapping="Wrap"/>
@@ -395,7 +395,7 @@
                                  IsOpen="False"
                                  IsClosable="False"
                                  Title="MSIX installation detected"
-                                 Message="Removing OpenClaw from Windows Settings &#x2192; Apps will NOT clean up the Local Gateway (WSL distro, disk image). Use Remove Local Gateway below FIRST, then uninstall OpenClaw."/>
+                                 Message="从 Windows 设置 → 应用中卸载聚元灵创，不会清理本地网关（WSL 发行版、磁盘映像）。请先使用下方「删除本地网关」，再卸载聚元灵创。"/>
 
                         <TextBlock x:Uid="SettingsPage_RemovesTheWSLDistro" x:Name="GatewayBodyText"
                                    Text="Removes the app-owned WSL distro, its disk image, autostart entry, and clears gateway credentials. Your MCP token is preserved. Onboarding will reset."
@@ -488,7 +488,7 @@
                                            Style="{StaticResource CaptionTextBlockStyle}"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                 <TextBlock Grid.Row="0" Grid.Column="1"
-                                           Text="OpenClaw Windows Companion"
+                                           Text="聚元灵创"
                                            Style="{StaticResource BodyTextBlockStyle}"
                                            IsTextSelectionEnabled="True"/>
 

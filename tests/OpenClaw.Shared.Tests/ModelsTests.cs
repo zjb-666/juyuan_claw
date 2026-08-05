@@ -2124,3 +2124,43 @@ public class SessionInfoContextSummaryTests
         Assert.Contains("screen.record", CommandCenterCommandGroups.MacNodeParityCommands);
     }
 }
+
+public class ChatMessageHeartbeatSuppressTests
+{
+    [Theory]
+    [InlineData("HEARTBEAT_OK")]
+    [InlineData("heartbeat_ok")]
+    [InlineData("  HEARTBEAT_OK  ")]
+    [InlineData("**HEARTBEAT_OK**")]
+    [InlineData("HEARTBEAT_OK.")]
+    public void IsHeartbeatAckToSuppress_True_ForAckOnlyReplies(string text)
+    {
+        Assert.True(ChatMessageInfo.IsHeartbeatAckToSuppress(text));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("hello")]
+    [InlineData("HEART")]
+    [InlineData("OK")]
+    [InlineData("The token HEARTBEAT_OK is in the middle of this sentence.")]
+    public void IsHeartbeatAckToSuppress_False_ForNormalText(string? text)
+    {
+        Assert.False(ChatMessageInfo.IsHeartbeatAckToSuppress(text));
+    }
+
+    [Fact]
+    public void IsHeartbeatPollUserPrompt_True_WhenHeartbeatMdAndAckTokenPresent()
+    {
+        Assert.True(ChatMessageInfo.IsHeartbeatPollUserPrompt(
+            "Read HEARTBEAT.md and reply HEARTBEAT_OK if idle."));
+    }
+
+    [Fact]
+    public void IsHeartbeatPollUserPrompt_False_WithoutBothMarkers()
+    {
+        Assert.False(ChatMessageInfo.IsHeartbeatPollUserPrompt("just HEARTBEAT_OK"));
+        Assert.False(ChatMessageInfo.IsHeartbeatPollUserPrompt("check HEARTBEAT.md only"));
+    }
+}

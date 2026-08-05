@@ -82,7 +82,7 @@
                         <HyperlinkButton x:Uid="ChannelsPage_DocsLink"
                                          Content="Read the channels guide"
                                          NavigateUri="https://docs.openclaw.ai/channels"
-                                         AutomationProperties.Name="Open the OpenClaw channels documentation"/>
+                                         AutomationProperties.Name="打开聚元灵创频道文档"/>
                     </InfoBar.ActionButton>
                 </InfoBar>
 

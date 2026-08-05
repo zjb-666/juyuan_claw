@@ -11,14 +11,14 @@
             <Image Source="ms-appx:///OpenClaw.SetupEngine.UI/Assets/Setup/OpenClawMascot.png"
                    Width="96" Height="96" HorizontalAlignment="Center"
                    AutomationProperties.AccessibilityView="Raw" />
-            <TextBlock Text="Welcome to OpenClaw"
+            <TextBlock Text="欢迎使用聚元灵创"
                        Style="{StaticResource TitleTextBlockStyle}"
                        HorizontalAlignment="Center" />
             <TextBlock TextWrapping="Wrap" TextAlignment="Center" MaxWidth="480"
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        HorizontalAlignment="Center"
-                       Text="OpenClaw runs your personal AI agent through a private gateway on this PC: reachable from chat apps like WhatsApp or Telegram." />
+                       Text="聚元灵创运行 your personal AI agent through a private gateway on this PC: reachable from chat apps like WhatsApp or Telegram." />
         </StackPanel>
 
         <InfoBar Grid.Row="1" VerticalAlignment="Top" Margin="0,24,0,0" MaxWidth="560"

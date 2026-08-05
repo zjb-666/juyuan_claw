@@ -8,6 +8,7 @@ using OpenClaw.Connection;
 using OpenClaw.Shared;
 using OpenClawTray.Helpers;
 using OpenClawTray.Pages;
+using OpenClawTray.Product;
 using OpenClawTray.Services;
 using OpenClawTray.ViewModels;
 using System;
@@ -15,6 +16,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using WinUIEx;
 
 namespace OpenClawTray.Windows;
@@ -44,6 +47,9 @@ public sealed partial class HubWindow : WindowEx
 
     private readonly ObservableCollection<NotificationItemViewModel> _bellItems = new();
     private bool _bellListBound;
+    private DispatcherTimer? _computeBalanceTimer;
+    private int _computeBalanceRefreshGate;
+    private ProductComputeBalance? _lastComputeBalance;
 
     // Legacy compatibility alias
     public string SelectedAgentId => _currentAgentId;
@@ -98,25 +104,31 @@ public sealed partial class HubWindow : WindowEx
         InitializeComponent();
         Title = AppIdentity.DisplayName;
         RefreshDiagnosticsNavVisibility();
+        RefreshProductBillingNavVisibility();
         ApplyHighContrastFallbackIfNeeded();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         Closed += (s, e) =>
         {
             IsClosed = true;
+            Activated -= OnHubWindowActivated;
             _contentReady.TrySetResult(true);
             _gatewayNavHideTimer?.Stop();
+            StopComputeBalancePolling();
             if (_appNotificationService != null)
                 _appNotificationService.Changed -= OnAppNotificationChanged;
             if (AppModel != null)
                 AppModel.PropertyChanged -= OnAppModelChanged;
         };
 
-        this.SetWindowSize(1000, 650);
+        this.SetWindowSize(1280, 800);
         this.CenterOnScreen();
         ApplyWindowStatusIcon(ConnectionStatusAccent.Neutral);
 
         RootGrid.SizeChanged += OnRootGridSizeChanged;
+        Activated += OnHubWindowActivated;
+        StartComputeBalancePolling();
+        _ = RefreshComputeBalanceAsync();
 
         ToolTipService.SetToolTip(StatusPillButton, LocalizationHelper.GetString("HubWindow_StatusPill_Tooltip"));
         ToolTipService.SetToolTip(NotificationsBellButton, LocalizationHelper.GetString("HubWindow_Bell_Tooltip"));
@@ -134,6 +146,39 @@ public sealed partial class HubWindow : WindowEx
         {
             NavigateInternal("settings");
             RemoveBackStackEntries("debug");
+            UpdateBackButton();
+        }
+        else
+        {
+            UpdateBackButton();
+        }
+    }
+
+    /// <summary>
+    /// Platform billing lock: hide operator-only Gateway surfaces so end users
+    /// cannot enter vendor API keys or inspect backend host inventory.
+    /// </summary>
+    public void RefreshProductBillingNavVisibility()
+    {
+        var hideOperatorSurfaces = ProductBillingGate.IsLocked;
+        if (NavConfig != null)
+            NavConfig.Visibility = hideOperatorSurfaces ? Visibility.Collapsed : Visibility.Visible;
+        if (NavInstances != null && hideOperatorSurfaces)
+            NavInstances.Visibility = Visibility.Collapsed;
+        if (!hideOperatorSurfaces)
+            return;
+
+        RemoveBackStackEntries("config");
+        RemoveBackStackEntries("instances");
+        RemoveBackStackEntries("nodes");
+        if (string.Equals(_currentNavTag, "config", StringComparison.Ordinal) ||
+            string.Equals(_currentNavTag, "instances", StringComparison.Ordinal) ||
+            string.Equals(_currentNavTag, "nodes", StringComparison.Ordinal))
+        {
+            NavigateInternal("settings");
+            RemoveBackStackEntries("config");
+            RemoveBackStackEntries("instances");
+            RemoveBackStackEntries("nodes");
             UpdateBackButton();
         }
         else
@@ -562,19 +607,139 @@ public sealed partial class HubWindow : WindowEx
         }
     }
 
+    private double _lastOpenPaneLength = double.NaN;
+
     private void OnRootGridSizeChanged(object sender, SizeChangedEventArgs e)
     {
         const double minPane = 200;
         const double maxPane = 260;
         const double ratio = 0.25;
 
-        double desired = e.NewSize.Width * ratio;
-        NavView.OpenPaneLength = Math.Clamp(desired, minPane, maxPane);
+        if (e.NewSize.Width <= 0 || NavView is null)
+            return;
+
+        // Chat mounts a tall Reactor tree; resizing the nav pane from SizeChanged
+        // re-enters measure and has triggered LayoutCycleException on Chat nav.
+        if (string.Equals(_currentNavTag, "chat", StringComparison.Ordinal))
+            return;
+
+        // Only assign when the value actually changes. Unconditionally writing
+        // OpenPaneLength from SizeChanged can re-enter measure and trip
+        // LayoutCycleException (seen freezing the product Hub within a minute).
+        double desired = Math.Clamp(e.NewSize.Width * ratio, minPane, maxPane);
+        if (!double.IsNaN(_lastOpenPaneLength) && Math.Abs(desired - _lastOpenPaneLength) < 0.5)
+            return;
+
+        _lastOpenPaneLength = desired;
+        if (Math.Abs(NavView.OpenPaneLength - desired) >= 0.5)
+            NavView.OpenPaneLength = desired;
     }
 
-    private void OnNavContentHostSizeChanged(object sender, SizeChangedEventArgs e)
+    private void OnHubWindowActivated(object sender, WindowActivatedEventArgs args)
     {
-        NavContentClip.Rect = new global::Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height);
+        if (args.WindowActivationState == WindowActivationState.Deactivated)
+            return;
+
+        // After idle/minimize, content must stay hittable (no clip dependency).
+        _ = RefreshComputeBalanceAsync();
+    }
+
+    private void StartComputeBalancePolling()
+    {
+        if (!ProductBillingGate.IsLocked)
+            return;
+        if (_computeBalanceTimer is not null)
+            return;
+
+        _computeBalanceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMinutes(2),
+        };
+        _computeBalanceTimer.Tick += (_, _) => _ = RefreshComputeBalanceAsync();
+        _computeBalanceTimer.Start();
+    }
+
+    private void StopComputeBalancePolling()
+    {
+        if (_computeBalanceTimer is null)
+            return;
+        _computeBalanceTimer.Stop();
+        _computeBalanceTimer = null;
+    }
+
+    /// <summary>
+    /// Pull RH balance via product BFF. Safe to call often; overlapping refreshes collapse.
+    /// </summary>
+    public Task RefreshComputeBalanceAsync()
+    {
+        if (!ProductBillingGate.IsLocked)
+        {
+            if (ComputeBalancePill != null)
+                ComputeBalancePill.Visibility = Visibility.Collapsed;
+            return Task.CompletedTask;
+        }
+
+        if (Interlocked.Exchange(ref _computeBalanceRefreshGate, 1) == 1)
+            return Task.CompletedTask;
+
+        return RefreshComputeBalanceCoreAsync();
+    }
+
+    private async Task RefreshComputeBalanceCoreAsync()
+    {
+        try
+        {
+            var token = ProductAuthStore.TryLoadAccessToken();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                ApplyComputeBalanceUi(null, unavailable: true);
+                return;
+            }
+
+            ProductConfig config;
+            try
+            {
+                config = ProductConfig.Load();
+            }
+            catch
+            {
+                ApplyComputeBalanceUi(null, unavailable: true);
+                return;
+            }
+
+            var balance = await ProductComputeBalanceClient.TryFetchAsync(config, token);
+            _lastComputeBalance = balance;
+            ApplyComputeBalanceUi(balance, unavailable: balance is null);
+        }
+        catch
+        {
+            ApplyComputeBalanceUi(_lastComputeBalance, unavailable: _lastComputeBalance is null);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _computeBalanceRefreshGate, 0);
+        }
+    }
+
+    private void ApplyComputeBalanceUi(ProductComputeBalance? balance, bool unavailable)
+    {
+        if (ComputeBalancePill is null || ComputeBalanceText is null)
+            return;
+
+        if (balance is null)
+        {
+            ComputeBalancePill.Visibility = unavailable ? Visibility.Collapsed : Visibility.Visible;
+            ComputeBalanceText.Text = "算力 —";
+            return;
+        }
+
+        ComputeBalancePill.Visibility = Visibility.Visible;
+        ComputeBalanceText.Text = ProductComputeBalanceClient.FormatDisplay(balance);
+        ToolTipService.SetToolTip(
+            ComputeBalancePill,
+            balance.Balance <= 0
+                ? "算力余额不足，请前往聚元云平台充值"
+                : $"剩余算力 {balance.Balance} {balance.Unit}（与网页钱包同源）");
     }
 
     private void OnNavPaneToggleButtonClick(object sender, RoutedEventArgs e)
@@ -685,6 +850,10 @@ public sealed partial class HubWindow : WindowEx
     {
         if (tag == "debug" && !DiagnosticsGate.IsVisible)
             tag = "settings";
+        if (tag == "config" && ProductBillingGate.IsLocked)
+            tag = "settings";
+        if ((tag == "instances" || tag == "nodes") && ProductBillingGate.IsLocked)
+            tag = "connection";
 
         var pageType = TagToPageType(tag);
         if (pageType == null) return;
@@ -896,7 +1065,8 @@ public sealed partial class HubWindow : WindowEx
             NavSessions.Visibility = vis;
             NavSkills.Visibility = vis;
             NavChannels.Visibility = vis;
-            NavInstances.Visibility = vis;
+            // Product builds hide host inventory; do not re-show it on connect.
+            NavInstances.Visibility = ProductBillingGate.IsLocked ? Visibility.Collapsed : vis;
             NavCron.Visibility = vis;
             NavAdvanced.Visibility = keepCurrentGatewayPageVisible ? Visibility.Visible : vis;
             NavGatewaySeparator.Visibility = vis;
@@ -1305,8 +1475,6 @@ public sealed partial class HubWindow : WindowEx
             new() { Icon = "🧠", Title = LocalizationHelper.Format("Command_GoToCron_Title", agentId), Subtitle = LocalizationHelper.GetString("Command_GoToCron_Subtitle"), Tag = $"agent:{agentId}:cron" },
             new() { Icon = "🧠", Title = LocalizationHelper.Format("Command_GoToWorkspace_Title", agentId), Subtitle = LocalizationHelper.GetString("Command_GoToWorkspace_Subtitle"), Tag = $"agent:{agentId}" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToChannels_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToChannels_Subtitle"), Tag = "channels" },
-            new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToInstances_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToInstances_Subtitle"), Tag = "instances" },
-            new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToConfig_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToConfig_Subtitle"), Tag = "config" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToUsage_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToUsage_Subtitle"), Tag = "usage" },
             new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToBindings_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToBindings_Subtitle"), Tag = "bindings" },
             new() { Icon = "🛡️", Title = LocalizationHelper.GetString("Command_GoToPermissions_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToPermissions_Subtitle"), Tag = "permissions" },
@@ -1317,6 +1485,23 @@ public sealed partial class HubWindow : WindowEx
             new() { Icon = "💬", Title = LocalizationHelper.GetString("Command_OpenChatWindow_Title"), Subtitle = LocalizationHelper.GetString("Command_OpenChatWindow_Subtitle"), Tag = "chat" },
             new() { Icon = "🌐", Title = LocalizationHelper.GetString("Command_OpenDashboard_Title"), Subtitle = LocalizationHelper.GetString("Command_OpenDashboard_Subtitle"), Execute = () => ((IAppCommands)Application.Current).OpenDashboard(null) },
         };
+
+        if (!ProductBillingGate.IsLocked)
+        {
+            commands.Insert(8, new() { Icon = "📡", Title = LocalizationHelper.GetString("Command_GoToInstances_Title"), Subtitle = LocalizationHelper.GetString("Command_GoToInstances_Subtitle"), Tag = "instances" });
+            var configCommand = new CommandItem
+            {
+                Icon = "📡",
+                Title = LocalizationHelper.GetString("Command_GoToConfig_Title"),
+                Subtitle = LocalizationHelper.GetString("Command_GoToConfig_Subtitle"),
+                Tag = "config"
+            };
+            var usageIndex = commands.FindIndex(c => c.Tag == "usage");
+            if (usageIndex >= 0)
+                commands.Insert(usageIndex, configCommand);
+            else
+                commands.Add(configCommand);
+        }
 
         if (DiagnosticsGate.IsVisible)
         {

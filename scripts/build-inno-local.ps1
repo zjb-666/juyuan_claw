@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build local OpenClaw Companion Inno installers for quick validation.
+    Build local 聚元灵创 Inno installers for quick validation.
 
 .DESCRIPTION
     Publishes the tray app into a production-style layout, then runs ISCC to
@@ -9,10 +9,10 @@
     Use -NoPublish after changing only installer.iss or docs/tests; it reuses
     the existing publish-local-* payloads and only recompiles Inno.
 
-.EXAMPLE
-    .\scripts\build-inno-local.ps1 -Arch x64 -Fast
-    .\scripts\build-inno-local.ps1 -Arch x64 -Dev -Fast
-    .\scripts\build-inno-local.ps1 -Arch All
+    .EXAMPLE
+    .\scripts\build-inno-local.ps1 -Arch x64 -ProductApiBaseUrl https://app.example.com -Fast
+    .\scripts\build-inno-local.ps1 -Arch x64 -ProductApiBaseUrl http://192.168.120.12:8787 -Dev -Fast
+    .\scripts\build-inno-local.ps1 -Arch All -ProductApiBaseUrl https://app.example.com
     .\scripts\build-inno-local.ps1 -Arch x64 -NoPublish -Fast
 #>
 
@@ -25,6 +25,8 @@ param(
     [string]$Configuration = "Release",
 
     [string]$Version,
+
+    [string]$ProductApiBaseUrl,
 
     [switch]$NoPublish,
 
@@ -85,6 +87,41 @@ function Get-RidForArch {
     return "win-x64"
 }
 
+function Test-PrivateOrLocalHost {
+    param([string]$HostName)
+
+    if ([string]::IsNullOrWhiteSpace($HostName)) {
+        return $false
+    }
+    if ($HostName -ieq "localhost") {
+        return $true
+    }
+
+    $address = $null
+    if (-not [System.Net.IPAddress]::TryParse($HostName, [ref]$address)) {
+        return $false
+    }
+    if ([System.Net.IPAddress]::IsLoopback($address)) {
+        return $true
+    }
+    if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        $bytes = $address.GetAddressBytes()
+        return ($bytes[0] -eq 10) -or
+            ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 168) -or
+            ($bytes[0] -eq 169 -and $bytes[1] -eq 254)
+    }
+    if ($address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
+        return $address.IsIPv6LinkLocal -or $address.IsIPv6SiteLocal -or $address.IsIPv6UniqueLocal
+    }
+    return $false
+}
+
+function Test-DevHttpHostAllowed {
+    param([Uri]$Uri)
+    return $Uri.IsLoopback -or (Test-PrivateOrLocalHost $Uri.Host)
+}
+
 function Publish-ArchitecturePayload {
     param(
         [string]$Architecture,
@@ -98,6 +135,29 @@ function Publish-ArchitecturePayload {
     Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $publishDir | Out-Null
 
+    $configuredProductApiUrl = $ProductApiBaseUrl
+    if (-not $configuredProductApiUrl) {
+        if ($Dev) {
+            throw "Product API URL is empty. Pass -ProductApiBaseUrl http://192.168.x.x:8787 for Dev LAN builds."
+        }
+        throw "Product API URL is empty. Pass -ProductApiBaseUrl https://your-public-product-host before publishing."
+    }
+
+    $configuredUri = [Uri]$configuredProductApiUrl
+    if ($Dev) {
+        $isHttp = $configuredUri.Scheme -eq "http"
+        $isHttps = $configuredUri.Scheme -eq "https"
+        if (-not $isHttp -and -not $isHttps) {
+            throw "Dev ProductApiBaseUrl must use http or https."
+        }
+        if ($isHttp -and -not (Test-DevHttpHostAllowed $configuredUri)) {
+            throw "Dev HTTP ProductApiBaseUrl must target localhost or a private LAN address."
+        }
+    }
+    elseif ($configuredUri.Scheme -ne "https" -or $configuredUri.IsLoopback -or (Test-PrivateOrLocalHost $configuredUri.Host)) {
+        throw "Release ProductApiBaseUrl must be a public HTTPS URL."
+    }
+
     $trayPublishArgs = @(
         ".\src\OpenClaw.Tray.WinUI\OpenClaw.Tray.WinUI.csproj",
         "-c", $Configuration,
@@ -105,7 +165,8 @@ function Publish-ArchitecturePayload {
         "--self-contained",
         "-o", $publishDir,
         "-v:minimal",
-        "-p:DevBuild=$($Dev.IsPresent.ToString().ToLowerInvariant())"
+        "-p:DevBuild=$($Dev.IsPresent.ToString().ToLowerInvariant())",
+        "-p:ProductApiBaseUrl=$($configuredUri.AbsoluteUri.TrimEnd('/'))"
     )
     if ($PublishVersion) {
         $trayPublishArgs += "-p:Version=$PublishVersion"
@@ -121,7 +182,7 @@ function Assert-PayloadReady {
     param([string]$Architecture)
 
     $publishDir = Join-Path $repoRoot "publish-local-$Architecture"
-    $trayExe = Join-Path $publishDir "OpenClaw.Tray.WinUI.exe"
+    $trayExe = Join-Path $publishDir "JuyuanLingchuang.exe"
 
     if (-not (Test-Path -LiteralPath $trayExe)) {
         throw "Missing tray payload at $trayExe. Rerun without -NoPublish."
@@ -211,7 +272,7 @@ foreach ($architecture in $architectures) {
 }
 
 Write-Step "Built installers"
-Get-ChildItem -Path (Join-Path $repoRoot "Output\OpenClawCompanion*-Setup-*.exe") |
+Get-ChildItem -Path (Join-Path $repoRoot "Output\JuyuanLingchuang*-Setup-*.exe") |
     Sort-Object Name |
     ForEach-Object {
         "{0}`t{1:N2} MB`t{2}" -f $_.FullName, ($_.Length / 1MB), $_.LastWriteTime

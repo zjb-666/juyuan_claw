@@ -230,6 +230,16 @@ public sealed partial class SettingsPage : Page
 
     private void LoadGatewaySection(SettingsManager settings)
     {
+        if (ProductBillingGate.IsLocked)
+        {
+            // Platform owns the user Gateway; do not offer local WSL provider/key setup.
+            LocalGatewaySectionHeader.Visibility = Visibility.Collapsed;
+            OpenClawOnboardCard.Visibility = Visibility.Collapsed;
+            LocalGatewayExpander.Visibility = Visibility.Collapsed;
+            MsixWarningBar.IsOpen = false;
+            return;
+        }
+
         var setupStatePath = Path.Combine(SetupExistingGatewayClassifier.ResolveLocalDataPath(), "setup-state.json");
         var activeGatewayAccess = GatewayHostAccessClassifier.Classify(CurrentApp.Registry?.GetActive());
 
@@ -273,7 +283,7 @@ public sealed partial class SettingsPage : Page
         {
             new ToastContentBuilder()
                 .AddText("Test Notification")
-                .AddText("This is a test notification from OpenClaw settings.")
+                .AddText("这是来自聚元灵创设置的测试通知。")
                 .Show();
         }
         catch (Exception ex)
@@ -391,7 +401,7 @@ public sealed partial class SettingsPage : Page
         try
         {
             var exePath = ResolveCurrentExecutablePath()
-                ?? throw new FileNotFoundException("OpenClaw tray executable could not be resolved for local gateway removal.");
+                ?? throw new FileNotFoundException("无法解析聚元灵创托盘程序路径，无法删除本地网关。");
 
             jsonOutput = Path.Combine(Path.GetTempPath(), $"openclaw-uninstall-{Guid.NewGuid():N}.json");
 
@@ -405,7 +415,7 @@ public sealed partial class SettingsPage : Page
             psi.ArgumentList.Add("--json-output");
             psi.ArgumentList.Add(jsonOutput);
 
-            proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start OpenClaw uninstall process.");
+            proc = Process.Start(psi) ?? throw new InvalidOperationException("无法启动聚元灵创卸载进程。");
             await proc.WaitForExitAsync(_uninstallCts.Token);
 
             if (proc.ExitCode == 0)

@@ -12,10 +12,10 @@
 [CmdletBinding()]
 param(
     [string]$AppRoot = $PSScriptRoot,
-    [string]$DataDirectoryName = 'OpenClawTray',
-    [string]$AutoStartName = 'OpenClawTray',
-    [string]$StartupTaskName = 'OpenClaw Companion',
-    [string]$DistroName = 'OpenClawGateway'
+    [string]$DataDirectoryName = 'JuyuanLingchuang',
+    [string]$AutoStartName = 'JuyuanLingchuang',
+    [string]$StartupTaskName = '聚元灵创',
+    [string]$DistroName = 'JuyuanLingchuangGateway'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -525,7 +525,7 @@ function Resolve-AppDataDir {
             -ExitCode 0 `
             -Message $Message `
             -Details ([ordered]@{ artifactWarnings = @($script:cleanupWarnings) })
-        Write-Host "OpenClaw local WSL gateway removed successfully."
+        Write-Host "Local WSL gateway cleanup finished."
         exit 0
 }
 
@@ -599,10 +599,15 @@ function Test-DistroNotFound {
         return $false
     }
 
-    return $Output -match 'WSL_E_DISTRO_NOT_FOUND' -or
-        $Output -match 'There is no distribution with the supplied name' -or
-        $Output -match 'The specified distribution.*(could not be found|not found)' -or
-        $Output -match 'distribution.*not.*found'
+    $normalized = ($Output -replace "`0", '')
+    return $normalized -match 'WSL_E_DISTRO_NOT_FOUND' -or
+        $normalized -match 'There is no distribution with the supplied name' -or
+        $normalized -match 'The specified distribution.*(could not be found|not found)' -or
+        $normalized -match 'distribution.*not.*found' -or
+        # Localized Windows / WSL messages (Chinese, etc.)
+        $normalized -match '找不到.*(分发|发行版|发行版本|分发版)' -or
+        $normalized -match '(分发|发行版).*(不存在|未找到|找不到)' -or
+        $normalized -match '没有.*(分发|发行版).*名称'
 }
 
 function Test-DistroListed {
@@ -612,8 +617,23 @@ function Test-DistroListed {
         return $false
     }
 
-    $distros = ($Output -replace "`0", '') -split '\r?\n' | ForEach-Object { $_.Trim() }
-    return $distros -contains $DistroName
+    # wsl --list often emits UTF-16LE; strip NULs then compare case-insensitively.
+    $distros = ($Output -replace "`0", '') -split '\r?\n' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    return $distros | Where-Object {
+        [string]::Equals($_, $DistroName, [StringComparison]::OrdinalIgnoreCase)
+    } | Select-Object -First 1
+}
+
+function Test-DistroAbsentNow {
+    $listResult = Invoke-Wsl -Arguments @('--list', '--quiet')
+    if ($listResult.ExitCode -ne 0) {
+        Write-GatewayLog "Could not re-list WSL distros (exit $($listResult.ExitCode)); treating absence check as inconclusive."
+        return $false
+    }
+
+    return -not (Test-DistroListed $listResult.Output)
 }
 
 function Remove-GatewayDirectory {
@@ -660,10 +680,15 @@ try {
     }
 
     $listResult = Invoke-Wsl -Arguments @('--list', '--quiet')
-    if ($listResult.ExitCode -eq 0 -and -not (Test-DistroListed $listResult.Output)) {
+    $distroListed = ($listResult.ExitCode -eq 0) -and (Test-DistroListed $listResult.Output)
+    if ($listResult.ExitCode -eq 0 -and -not $distroListed) {
         Write-GatewayLog "WSL distro '$DistroName' is not registered; removing stale gateway directory if present."
         Remove-GatewayDirectory
         Complete-GatewayCleanup -Message "Local WSL gateway '$DistroName' was already unregistered."
+    }
+
+    if ($listResult.ExitCode -ne 0) {
+        Write-GatewayLog "wsl --list failed (exit $($listResult.ExitCode)); continuing with best-effort unregister."
     }
 
     $terminateResult = Invoke-Wsl -Arguments @('--terminate', $DistroName)
@@ -674,17 +699,16 @@ try {
     Start-Sleep -Seconds 2
 
     $unregisterResult = Invoke-Wsl -Arguments @('--unregister', $DistroName)
-    if ($unregisterResult.ExitCode -ne 0 -and -not (Test-DistroNotFound $unregisterResult.Output)) {
-        Write-GatewayResult `
-            -Succeeded $false `
-            -ExitCode $unregisterResult.ExitCode `
-            -Message "Failed to unregister WSL distro '$DistroName'." `
-            -Details $unregisterResult.Output
-        exit $unregisterResult.ExitCode
-    }
-
     if ($unregisterResult.ExitCode -ne 0) {
-        Write-GatewayLog "Treating missing distro '$DistroName' as already removed."
+        if ((Test-DistroNotFound $unregisterResult.Output) -or (Test-DistroAbsentNow)) {
+            Write-GatewayLog "Treating missing distro '$DistroName' as already removed (unregister exit $($unregisterResult.ExitCode))."
+        } else {
+            # Product installs often never create a local WSL gateway. Do not block app
+            # uninstall on WSL unregister failures; still clean Windows-side artifacts.
+            Write-GatewayLog "Unregister failed (exit $($unregisterResult.ExitCode)); continuing with Windows artifact cleanup only. Output: $($unregisterResult.Output)"
+            Remove-GatewayDirectory
+            Complete-GatewayCleanup -Message "WSL unregister for '$DistroName' failed; Windows local-gateway artifacts were cleaned and uninstall may continue."
+        }
     }
 
     Remove-GatewayDirectory
@@ -694,7 +718,13 @@ try {
     $message = $_.Exception.Message
     Write-GatewayLog "Local gateway cleanup failed: $message"
     try { "[$(Get-Date -Format 'o')] $message" | Out-File -LiteralPath $errorPath -Encoding UTF8 -Force } catch {}
-    Write-GatewayResult -Succeeded $false -ExitCode 1 -Message $message
+    # Never hard-block Inno uninstall on gateway cleanup exceptions. Artifact cleanup is best-effort.
+    try {
+        Remove-WindowsGatewayArtifacts
+    } catch {
+        Write-GatewayLog "Windows artifact cleanup also failed: $($_.Exception.Message)"
+    }
+    Write-GatewayResult -Succeeded $true -ExitCode 0 -Message "Gateway cleanup soft-failed but uninstall may continue: $message"
     Write-Warning $message
-    exit 1
+    exit 0
 }

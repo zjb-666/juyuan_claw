@@ -1800,10 +1800,53 @@ public static class ModelFormatting
 public class ChatMessageInfo
 {
     public const string SilentAssistantDirective = "NO_REPLY";
+    public const string HeartbeatAckToken = "HEARTBEAT_OK";
 
     public static bool IsSilentAssistantDirective(string? role, string? text) =>
         string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(text?.Trim(), SilentAssistantDirective, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Gateway heartbeat acknowledgments must not render in the companion chat.
+    /// Flooding HEARTBEAT_OK remounts the FunctionalUI timeline and can freeze input.
+    /// Mirrors gateway stripHeartbeatToken skip for OK-only / short-rest replies.
+    /// </summary>
+    public static bool IsHeartbeatAckToSuppress(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim();
+        // Strip light HTML/markdown wrappers around the token.
+        var normalized = System.Text.RegularExpressions.Regex.Replace(trimmed, "<[^>]+>", " ");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"^[\*`~_]+", "");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"[\*`~_]+$", "");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
+
+        if (string.Equals(normalized, HeartbeatAckToken, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!normalized.Contains(HeartbeatAckToken, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        const int maxAckChars = 300;
+        string rest;
+        if (normalized.StartsWith(HeartbeatAckToken, StringComparison.OrdinalIgnoreCase))
+            rest = normalized[HeartbeatAckToken.Length..].TrimStart(' ', '.', '!', '-', '\n', '\r', '\t');
+        else if (normalized.EndsWith(HeartbeatAckToken, StringComparison.OrdinalIgnoreCase))
+            rest = normalized[..^HeartbeatAckToken.Length].TrimEnd(' ', '.', '!', '-', '\n', '\r', '\t');
+        else
+            return false; // token only special-cased at edges (gateway contract)
+
+        rest = rest.Trim();
+        return rest.Length == 0 || rest.Length <= maxAckChars;
+    }
+
+    /// <summary>Heartbeat poll prompts injected as user turns (workspace HEARTBEAT.md checks).</summary>
+    public static bool IsHeartbeatPollUserPrompt(string? text) =>
+        !string.IsNullOrWhiteSpace(text) &&
+        text.Contains("HEARTBEAT.md", StringComparison.OrdinalIgnoreCase) &&
+        text.Contains(HeartbeatAckToken, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Session this message belongs to (e.g. "main").</summary>
     public string SessionKey { get; set; } = "";

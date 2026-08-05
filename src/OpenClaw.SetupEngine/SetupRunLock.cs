@@ -32,7 +32,7 @@ public sealed class SetupRunLock : IDisposable
         catch (IOException)
         {
             runLock = null;
-            message = $"Another OpenClaw setup run appears to be active. Wait for it to finish, then retry. Lock file: {path}";
+            message = $"另一个聚元灵创设置进程似乎正在运行。请等待其完成后再重试。 Lock file: {path}";
             return false;
         }
         catch (UnauthorizedAccessException ex)

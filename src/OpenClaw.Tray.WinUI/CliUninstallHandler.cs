@@ -57,7 +57,7 @@ internal static class CliUninstallHandler
             setupArgs.Add(jsonOutputPath);
         }
 
-        Console.WriteLine("OpenClaw Uninstall: running SetupEngine");
+        Console.WriteLine("聚元灵创卸载: running SetupEngine");
         Console.WriteLine($"  Arguments:  {string.Join(' ', setupArgs)}");
         Console.WriteLine();
 

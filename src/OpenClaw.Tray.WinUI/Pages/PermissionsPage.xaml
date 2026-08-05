@@ -374,7 +374,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                         <TextBlock x:Uid="PermissionsPage_CameraMicrophoneAmpScreen" Text="Camera, microphone &amp; screen access" Style="{StaticResource BodyTextBlockStyle}"/>
-                        <TextBlock x:Uid="PermissionsPage_SystemLevelPrivacyPermissions" Text="System-level privacy permissions are managed by Windows. Open Windows Privacy Settings to grant or revoke OpenClaw access."
+                        <TextBlock x:Uid="PermissionsPage_SystemLevelPrivacyPermissions" Text="System-level privacy permissions are managed by Windows. Open Windows Privacy Settings to grant or revoke 聚元灵创 access."
                                    Style="{StaticResource CaptionTextBlockStyle}"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                    TextWrapping="Wrap"/>

@@ -17,7 +17,7 @@ namespace OpenClaw.Shared;
 /// </remarks>
 public static class AppVersionInfo
 {
-    private const string TrayAssemblyName = "OpenClaw.Tray.WinUI";
+    private const string TrayAssemblyName = "JuyuanLingchuang";
 
     private static readonly string _version = ResolveVersion();
 

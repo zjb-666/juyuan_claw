@@ -542,7 +542,7 @@ public sealed class ManagedLocalGatewayPortProvenanceService
                 listener.ProcessPath);
         }
 
-        var taskName = $"OpenClaw Gateway ({managedDistroName})";
+        var taskName = $"聚元灵创网关 ({managedDistroName})";
         if (IsProvenObsoleteNativeGateway(managedDistroName, port, listener, taskName))
         {
             return new GatewayEndpointProvenance(

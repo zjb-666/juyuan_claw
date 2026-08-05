@@ -2993,6 +2993,9 @@ Use one of these options:
   <data name="Chat_Composer_Tooltip_Stop" xml:space="preserve">
     <value>Stop</value>
   </data>
+  <data name="Chat_Composer_Tooltip_Settings" xml:space="preserve">
+    <value>Settings</value>
+  </data>
   <data name="Chat_Composer_AssistantWorking" xml:space="preserve">
     <value>Assistant is working…</value>
   </data>

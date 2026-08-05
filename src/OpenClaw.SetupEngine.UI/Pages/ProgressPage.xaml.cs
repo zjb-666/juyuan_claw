@@ -41,7 +41,7 @@ public sealed partial class ProgressPage : Page
         ("port", "Checking gateway port", ["preflight-port"]),
         ("wsl-create", "Installing clean WSL gateway", ["wsl-create"]),
         ("wsl-configure", "Configuring instance", ["wsl-configure", "validate-wsl-lockdown"]),
-        ("install-cli", "Installing OpenClaw", ["install-cli"]),
+        ("install-cli", "Installing 聚元灵创", ["install-cli"]),
         ("tailscale-auth", "Connecting Tailscale", ["install-tailscale", "authorize-tailscale"]),
         ("configure", "Preparing gateway", ["configure-gateway", "install-service"]),
         ("start", "Starting gateway", ["start-gateway", "mint-token"]),
@@ -92,7 +92,7 @@ public sealed partial class ProgressPage : Page
 
     private void RenderProgressPreview()
     {
-        SubtitleText.Text = "Creating OpenClawGateway WSL instance: about 4 minutes left";
+        SubtitleText.Text = "Creating JuyuanLingchuangGateway WSL instance: about 4 minutes left";
         var ids = StepGroups.Select(g => g.GroupId).ToArray();
         for (int i = 0; i < ids.Length; i++)
         {
@@ -103,9 +103,9 @@ public sealed partial class ProgressPage : Page
         LogText.Text =
             "[12:04:01] [info] Windows 11 26100 · WSL 2 present\n" +
             "[12:04:03] [info] port 127.0.0.1:18789 available\n" +
-            "[12:04:05] [info] wsl --install -d Ubuntu-24.04 --name OpenClawGateway --no-launch\n" +
+            "[12:04:05] [info] wsl --install -d Ubuntu-24.04 --name JuyuanLingchuangGateway --no-launch\n" +
             "[12:04:38] [info] downloading distro … 142/200 MB\n" +
-            "[12:04:38] [changed] created %LOCALAPPDATA%\\OpenClawTray\\wsl\\OpenClawGateway\\\n" +
+            "[12:04:38] [changed] created %LOCALAPPDATA%\\JuyuanLingchuang\\wsl\\JuyuanLingchuangGateway\\\n" +
             "[12:04:38] [info] next: install CLI via HTTPS, configure loopback gateway\n";
     }
 
@@ -328,7 +328,7 @@ public sealed partial class ProgressPage : Page
         if (SetupWindow.Active?.TryNavigateToWizard() == true)
             return;
 
-        MilestoneStatusText.Text = "Another setup task is still active. Wait for it to finish, then start OpenClaw onboard.";
+        MilestoneStatusText.Text = "Another setup task is still active. Wait for it to finish, then start 聚元灵创引导.";
     }
 
     private static List<SetupStep> BuildSteps(SetupConfig config)

@@ -57,7 +57,7 @@
                                Style="{StaticResource TitleTextBlockStyle}"
                                Margin="0,0,0,2"/>
                     <TextBlock x:Uid="DiagnosticsPage_Subtitle"
-                               Text="Inspect, export, and troubleshoot your OpenClaw installation."
+                               Text="检查、导出并排查聚元灵创安装问题。"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Margin="0,0,0,12"/>
@@ -368,7 +368,7 @@
 
                     <toolkit:SettingsExpander x:Uid="DiagnosticsPage_Expander_ChatOverrides"
                                              Header="Chat surface overrides"
-                                             Description="Per-surface override of the chat UI. Resets when OpenClaw restarts.">
+                                             Description="Per-surface override of the chat UI. 聚元灵创重启后重置。">
                         <toolkit:SettingsExpander.HeaderIcon>
                             <FontIcon Glyph="{x:Bind helpers:FluentIconCatalog.Chat, Mode=OneTime}"
                                       FontFamily="{ThemeResource SymbolThemeFontFamily}"/>

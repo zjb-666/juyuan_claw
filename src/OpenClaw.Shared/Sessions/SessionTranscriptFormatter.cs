@@ -19,7 +19,7 @@ public static class SessionTranscriptFormatter
 
         var nl = Environment.NewLine;
         var sb = new StringBuilder();
-        sb.Append("OpenClaw session transcript").Append(nl);
+        sb.Append("聚元灵创会话记录").Append(nl);
         sb.Append("Session: ").Append(string.IsNullOrWhiteSpace(history.SessionKey) ? "(unknown)" : history.SessionKey).Append(nl);
         if (!string.IsNullOrWhiteSpace(history.SessionId))
             sb.Append("Session ID: ").Append(history.SessionId).Append(nl);

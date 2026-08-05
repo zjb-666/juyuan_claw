@@ -77,7 +77,7 @@ public static class ActivityStreamService
 
         var lines = new List<string>
         {
-            "OpenClaw Tray activity support bundle",
+            "聚元灵创活动支持包",
             $"Generated: {DateTimeOffset.Now:O}",
             $"Items: {snapshot.Count}",
             ""

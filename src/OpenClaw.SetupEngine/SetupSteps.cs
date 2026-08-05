@@ -398,7 +398,7 @@ public sealed class CleanupStaleDistroStep : SetupStep
         }
 
         return StepResult.Fail(
-            $"Failed to remove app-owned WSL directory '{deletePath}'. Close any process using the OpenClaw WSL distro and retry setup."
+            $"无法删除应用管理的 WSL 目录 '{deletePath}'. Close any process using the 聚元灵创 WSL distro and retry setup."
             + (lastError is null ? "" : $" Last error: {lastError.Message}"));
     }
 }
@@ -537,7 +537,7 @@ public sealed class PreflightWslStep : SetupStep
             return StepResult.Terminal($"WSL version output did not include a parseable WSL version. {WslInstallSupport.UpdateInstructions}");
 
         if (!WslInstallSupport.SupportsDirectNamedInstall(wslVersion))
-            return StepResult.Terminal($"WSL {wslVersion} cannot create a clean app-owned OpenClaw gateway distro. {WslInstallSupport.UpdateInstructions}");
+            return StepResult.Terminal($"WSL {wslVersion} cannot create a clean app-owned 聚元灵创网关 distro. {WslInstallSupport.UpdateInstructions}");
 
         ctx.Logger.Info($"WSL version output: {NormalizeWslOutput(versionResult.Stdout).Trim()}");
         ctx.Logger.Info($"WSL direct named install is supported (version {wslVersion})");
@@ -1228,7 +1228,7 @@ public sealed class ValidateWslLockdownStep : SetupStep
 public sealed class InstallCliStep : SetupStep
 {
     public override string Id => "install-cli";
-    public override string DisplayName => "Install OpenClaw CLI";
+    public override string DisplayName => "Install 聚元灵创 CLI";
     public override RetryPolicy Retry => new(MaxAttempts: 2, InitialDelay: TimeSpan.FromSeconds(5));
 
     public override async Task<StepResult> ExecuteAsync(SetupContext ctx, CancellationToken ct)
@@ -1281,7 +1281,7 @@ public sealed class InstallCliStep : SetupStep
                         return pathResult;
                 }
 
-                ctx.Logger.Info($"OpenClaw CLI version: {verify.Stdout.Trim()}");
+                ctx.Logger.Info($"聚元灵创 CLI version: {verify.Stdout.Trim()}");
                 return StepResult.Ok($"CLI installed: {verify.Stdout.Trim()}");
             }
         }
@@ -1346,7 +1346,7 @@ public sealed class InstallCliStep : SetupStep
         if (bareVerify.ExitCode != 0 || string.IsNullOrWhiteSpace(bareVerify.Stdout))
             return StepResult.Fail($"openclaw PATH symlink verification failed: {bareVerify.Stderr}");
 
-        ctx.Logger.Info($"OpenClaw CLI available on default PATH: {bareVerify.Stdout.Trim()}");
+        ctx.Logger.Info($"聚元灵创 CLI available on default PATH: {bareVerify.Stdout.Trim()}");
         return StepResult.Ok();
     }
 
@@ -2715,7 +2715,7 @@ public sealed class WindowsNodeBootstrapContextStep : SetupStep
         // so relative configured paths are home-relative rather than caller-cwd-relative.
         var workspace = await ResolveWorkspacePathAsync(ctx, distro, user, home, ct);
         if (string.IsNullOrWhiteSpace(workspace))
-            return StepResult.Fail("Could not resolve OpenClaw agent workspace path");
+            return StepResult.Fail("无法解析聚元灵创代理工作区路径");
 
         var workspaceOverride = ctx.Config.WindowsNodeContext.WorkspacePath?.Trim();
         var runBaselineSetup = !string.IsNullOrWhiteSpace(workspaceOverride);
@@ -2723,7 +2723,7 @@ public sealed class WindowsNodeBootstrapContextStep : SetupStep
         {
             var defaultWorkspace = await ResolveConfiguredDefaultWorkspacePathAsync(ctx, distro, user, home, ct);
             if (string.IsNullOrWhiteSpace(defaultWorkspace))
-                return StepResult.Fail("Could not resolve OpenClaw default workspace path");
+                return StepResult.Fail("无法解析聚元灵创默认工作区路径");
 
             runBaselineSetup = string.Equals(
                 workspace.TrimEnd('/'),

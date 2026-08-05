@@ -268,7 +268,7 @@ public sealed class OpenClawReactorChatRoot : Component<OpenClawReactorChatRootP
             null,
             entryMetadata,
             timelineGeneration,
-            "OpenClaw Windows Tray",
+            "聚元灵创",
             "Assistant",
             effectiveThread?.Model,
             showToolCalls
@@ -403,7 +403,7 @@ public sealed class OpenClawReactorChatRoot : Component<OpenClawReactorChatRootP
             Id = composeKey,
             AgentId = snapshot.ComposeTarget.AgentId,
             Title = _pendingSelectedThreadId is null
-                ? cached?.ThreadTitle ?? "OpenClaw Windows Tray"
+                ? cached?.ThreadTitle ?? "聚元灵创"
                 : LocalizationHelper.GetString("Chat_PendingNewSessionTitle"),
             Model = cached?.Model,
             ModelProvider = cached?.ModelProvider,
@@ -679,8 +679,11 @@ public sealed class ReactorChatComposer : Component<ReactorChatComposerProps>
             AccessibilitySettings.HighContrastChanged += handler;
             state.HighContrastChanged = handler;
         }
-        catch (System.Runtime.InteropServices.COMException ex)
+        catch (Exception ex)
         {
+            // Unpackaged WinUI often throws InvalidCastException ("interface not
+            // supported") for HighContrastChanged — catching only COMException
+            // left that as an unhandled crash that blanked Hub + chat.
             state.HighContrastEventUnavailable = true;
             OpenClawTray.Services.Logger.Warn(
                 $"[ReactorChatComposer] High Contrast change notifications are unavailable: {ex.Message}");
